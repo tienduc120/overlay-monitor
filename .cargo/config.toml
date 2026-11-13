@@ -1,3 +1,7 @@
 # `cargo xtask <command>` is the single command surface (docs/adr/0001-foundations.md). Protected.
 [alias]
 xtask = "run --quiet --package xtask --"
+
+# Build the C runtime into the exe, so it starts on a PC without the Visual C++ Redistributable.
+[target.'cfg(all(windows, target_env = "msvc"))']
+rustflags = ["-C", "target-feature=+crt-static"]
