@@ -10,10 +10,12 @@ publish.workspace = true
 [dependencies]
 thiserror = { workspace = true, features = ["std"] }
 windows = { workspace = true, features = [
+    "Wdk_Graphics_Direct3D",
     "Win32_Foundation",
     "Win32_Security",
     "Win32_Storage_FileSystem",
     "Win32_System_IO",
+    "Win32_System_Performance",
     "Win32_System_SystemInformation",
     "Win32_System_Threading",
 ] }
