@@ -5,5 +5,7 @@
 
 pub mod cpu;
 pub mod memory;
+pub mod mutex;
+pub mod pawnio;
 
 pub use windows::core::Error as Win32Error;

@@ -3,6 +3,7 @@
 mod doctor;
 mod gates;
 mod hook;
+mod modules;
 mod scaffold;
 
 use std::io::{self, Write as _};
@@ -44,6 +45,8 @@ enum Cmd {
     },
     /// Check the toolchain and the pinned tools; prints the install command for anything missing.
     Doctor,
+    /// Download the pinned `PawnIO` modules, check their hashes, and copy them next to the debug and release builds.
+    Modules,
     /// Start a service by copying the witness services/example under a new name.
     NewService {
         name: String,
@@ -67,6 +70,7 @@ fn main() -> ExitCode {
         }
         Cmd::Hook { event } => return hook::run(&root, &event),
         Cmd::Doctor => doctor::run(&root, &mut out),
+        Cmd::Modules => modules::run(&root, &mut out),
         Cmd::NewService { name, aggregate } => scaffold::new_service(&root, &name, &aggregate, &mut out).map(|()| true),
     };
     match result {

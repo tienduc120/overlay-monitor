@@ -22,7 +22,7 @@ Run from the repository root. There is no Make; `cargo xtask` is the command sur
 | Check the toolchain and pinned tools | `cargo xtask doctor` (prints the install command for anything missing) |
 | Install the git hooks (once per clone) | `lefthook install` |
 | Start a new service | `cargo xtask new-service <name> --aggregate <Name>` (skill: `new-service`) |
-| Check the PawnIO modules (added in Task 6) | `cargo xtask modules` |
+| Download and hash-check the PawnIO modules into `target/{debug,release}/modules` | `cargo xtask modules` |
 | Check a commit message | `cargo xtask commitmsg <file>` (the commit-msg hook calls it) |
 | Format | `cargo fmt --all` |
 | Make the skills visible to Claude Code (once per clone) | Windows: `cmd /c mklink /J .claude\skills .agents\skills`; Unix: `ln -s ../.agents/skills .claude/skills` |
