@@ -4,8 +4,9 @@ use std::time::Duration;
 
 use windows::Win32::Foundation::{DWRITE_E_NOFONT, LPARAM, LRESULT, RECT, WPARAM};
 use windows::Win32::UI::WindowsAndMessaging::{
-    GetWindowRect, HTCAPTION, MA_NOACTIVATE, PostMessageW, SPI_GETWORKAREA, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS,
-    SendMessageW, SystemParametersInfoW, WM_MOUSEACTIVATE, WM_NCHITTEST, WM_NCRBUTTONUP,
+    GWL_EXSTYLE, GetWindowLongPtrW, GetWindowRect, HTCAPTION, HWND_NOTOPMOST, MA_NOACTIVATE, PostMessageW,
+    SPI_GETWORKAREA, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS, SendMessageW,
+    SetWindowPos, SystemParametersInfoW, WM_MOUSEACTIVATE, WM_NCHITTEST, WM_NCRBUTTONUP, WS_EX_TOPMOST,
 };
 
 use super::{OverlayWindow, premultiplied_bgra, screen_point, window_size};
@@ -208,4 +209,40 @@ fn primary_work_area() -> RECT {
     }
     .unwrap();
     work
+}
+
+#[test]
+fn keeping_on_top_restores_a_lost_topmost_position_without_moving_or_showing_it() {
+    let mut window = OverlayWindow::create(EventSink::discard()).unwrap();
+    window.draw(&lines(&["FPS:   30 FPS"]), &style()).unwrap();
+    let before = window_rect(&window);
+    // SAFETY: the window is alive; the flags keep it where it is, as it is, and unactivated.
+    unsafe {
+        SetWindowPos(
+            window.window,
+            Some(HWND_NOTOPMOST),
+            0,
+            0,
+            0,
+            0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+        )
+    }
+    .unwrap();
+    assert!(!is_topmost(&window), "the test must start with the window demoted");
+
+    window.keep_on_top();
+
+    assert!(
+        is_topmost(&window),
+        "the overlay must be back above other topmost windows"
+    );
+    assert_eq!(window_rect(&window), before, "it must not move or resize");
+    assert!(!window.is_visible(), "it must not show a hidden overlay");
+}
+
+fn is_topmost(window: &OverlayWindow) -> bool {
+    // SAFETY: reading the window's extended style has no preconditions.
+    let style = unsafe { GetWindowLongPtrW(window.window, GWL_EXSTYLE) };
+    style.cast_unsigned() & WS_EX_TOPMOST.0 as usize != 0
 }

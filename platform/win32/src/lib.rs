@@ -8,7 +8,9 @@ pub mod dpi;
 pub mod etw;
 pub mod foreground;
 pub mod gpu;
+pub mod instance;
 pub mod memory;
+pub mod menu;
 pub mod mutex;
 pub mod overlay;
 pub mod pawnio;
@@ -16,6 +18,7 @@ pub mod pdh;
 #[cfg(feature = "test-support")]
 pub mod testing;
 pub mod text;
+pub mod tray;
 pub mod ui;
 
 pub use windows::core::Error as Win32Error;

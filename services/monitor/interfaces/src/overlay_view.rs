@@ -6,20 +6,48 @@ use platform_win32::text::TextStyle;
 /// The overlay window, showing the sampler's frames.
 pub struct OverlayView {
     window: OverlayWindow,
+    /// What the window shows now, so an unchanged frame is not drawn again.
+    last: Option<(Vec<String>, OverlayStyle)>,
 }
 
 impl OverlayView {
     pub fn new(window: OverlayWindow) -> Self {
-        Self { window }
+        Self { window, last: None }
     }
 
-    /// Draws `frame` in `style`; the window keeps whatever visibility it had.
+    pub fn show(&self) {
+        self.window.show();
+    }
+
+    pub fn hide(&self) {
+        self.window.hide();
+    }
+
+    pub fn is_visible(&self) -> bool {
+        self.window.is_visible()
+    }
+
+    /// Draws `frame` in `style` when it differs from what is shown, and otherwise only puts the window back on top
+    /// of other topmost windows. The window keeps whatever visibility it had.
     ///
     /// # Errors
     /// The style's font is not installed, or drawing failed.
     pub fn show_frame(&mut self, frame: &OverlayFrame, style: &OverlayStyle) -> Result<(), Win32Error> {
-        self.window.draw(&frame.lines, &text_style(style))
+        let last = self.last.as_ref().map(|(lines, style)| (lines.as_slice(), style));
+        if !needs_redraw(last, frame, style) {
+            self.window.keep_on_top();
+            return Ok(());
+        }
+        self.window.draw(&frame.lines, &text_style(style))?;
+        // Only a drawn frame counts as shown, so a failed draw is tried again.
+        self.last = Some((frame.lines.clone(), style.clone()));
+        Ok(())
     }
+}
+
+/// Whether `frame` in `style` differs from `last`, what the window shows now.
+pub fn needs_redraw(last: Option<(&[String], &OverlayStyle)>, frame: &OverlayFrame, style: &OverlayStyle) -> bool {
+    last != Some((frame.lines.as_slice(), style))
 }
 
 /// The overlay's style as the window draws it.

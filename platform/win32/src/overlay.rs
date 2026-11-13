@@ -28,9 +28,9 @@ use windows::Win32::UI::HiDpi::GetDpiForWindow;
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, GWLP_USERDATA, GetWindowLongPtrW, HTCAPTION, HWND_TOPMOST,
     IsWindowVisible, MA_NOACTIVATE, RegisterClassExW, SW_HIDE, SW_SHOWNOACTIVATE, SWP_NOACTIVATE, SWP_NOMOVE,
-    SWP_NOZORDER, SetWindowLongPtrW, SetWindowPos, ShowWindow, ULW_ALPHA, USER_DEFAULT_SCREEN_DPI, UpdateLayeredWindow,
-    WM_DPICHANGED, WM_MOUSEACTIVATE, WM_NCHITTEST, WM_NCRBUTTONDOWN, WM_NCRBUTTONUP, WNDCLASSEXW, WS_EX_LAYERED,
-    WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
+    SWP_NOSIZE, SWP_NOZORDER, SetWindowLongPtrW, SetWindowPos, ShowWindow, ULW_ALPHA, USER_DEFAULT_SCREEN_DPI,
+    UpdateLayeredWindow, WM_DPICHANGED, WM_MOUSEACTIVATE, WM_NCHITTEST, WM_NCRBUTTONDOWN, WM_NCRBUTTONUP, WNDCLASSEXW,
+    WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
 };
 use windows::core::{PCWSTR, w};
 
@@ -142,6 +142,23 @@ impl OverlayWindow {
     pub fn hide(&self) {
         // SAFETY: as in `show`.
         unsafe { ShowWindow(self.window, SW_HIDE) }.as_bool();
+    }
+
+    /// Puts the window back above other topmost windows, without moving, resizing, showing, or activating it.
+    pub fn keep_on_top(&self) {
+        // SAFETY: the window is alive. A failure leaves it where it was, and the next frame asks again.
+        unsafe {
+            SetWindowPos(
+                self.window,
+                Some(HWND_TOPMOST),
+                0,
+                0,
+                0,
+                0,
+                SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOSIZE,
+            )
+        }
+        .ok();
     }
 
     pub fn is_visible(&self) -> bool {
@@ -420,7 +437,7 @@ fn premultiplied_bgra(rgb: u32, alpha: u8) -> [u8; 4] {
 
 /// The screen point a mouse message carries: x in the low word, y in the high word, each signed, since a monitor left
 /// of or above the primary one has negative coordinates.
-fn screen_point(lparam: LPARAM) -> (i32, i32) {
+pub(crate) fn screen_point(lparam: LPARAM) -> (i32, i32) {
     let word = |shift: u32| i32::from(u16::try_from((lparam.0 >> shift) & 0xFFFF).unwrap_or(0).cast_signed());
     (word(0), word(16))
 }

@@ -6,7 +6,7 @@ use platform_win32::overlay::OverlayWindow;
 use platform_win32::text::TextStyle;
 use platform_win32::ui::{EventSink, pump_messages_for};
 
-use super::{OverlayView, text_style};
+use super::{OverlayView, needs_redraw, text_style};
 
 #[test]
 fn the_text_style_carries_every_overlay_style_value() {
@@ -71,4 +71,55 @@ fn shows_the_screenshot_lines_for_three_seconds() {
 
     view.show_frame(&frame, &default_style()).unwrap();
     pump_messages_for(Duration::from_secs(3));
+}
+
+fn frame(lines: &[&str]) -> OverlayFrame {
+    OverlayFrame {
+        lines: lines.iter().map(|&l| String::from(l)).collect(),
+    }
+}
+
+#[test]
+fn the_first_frame_is_always_drawn() {
+    assert!(needs_redraw(None, &frame(&["FPS: 30"]), &default_style()));
+}
+
+#[test]
+fn the_same_lines_in_the_same_style_are_not_drawn_again() {
+    let style = default_style();
+    let last = frame(&["FPS: 30"]);
+
+    assert!(!needs_redraw(Some((&last.lines, &style)), &frame(&["FPS: 30"]), &style));
+}
+
+#[test]
+fn changed_text_is_drawn() {
+    let style = default_style();
+    let last = frame(&["FPS: 30"]);
+
+    assert!(needs_redraw(Some((&last.lines, &style)), &frame(&["FPS: 31"]), &style));
+}
+
+#[test]
+fn a_changed_style_is_drawn_even_with_the_same_text() {
+    let style = default_style();
+    let bigger = OverlayStyle {
+        size_pt: style.size_pt + 1.0,
+        ..style.clone()
+    };
+    let last = frame(&["FPS: 30"]);
+
+    assert!(needs_redraw(Some((&last.lines, &style)), &frame(&["FPS: 30"]), &bigger));
+}
+
+#[test]
+fn the_view_shows_and_hides_its_window() {
+    let view = OverlayView::new(OverlayWindow::create(EventSink::discard()).unwrap());
+
+    view.show();
+    let shown = view.is_visible();
+    view.hide();
+    let hidden = !view.is_visible();
+
+    assert!(shown && hidden, "shown: {shown}, hidden afterwards: {hidden}");
 }

@@ -2,5 +2,7 @@
 //! style.
 
 mod overlay_view;
+mod ui;
 
-pub use overlay_view::{OverlayView, text_style};
+pub use overlay_view::{OverlayView, needs_redraw, text_style};
+pub use ui::{Action, Ui, UiState, menu_items};
