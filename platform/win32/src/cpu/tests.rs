@@ -33,7 +33,7 @@ fn an_alder_lake_signature_is_family_6_model_97h() {
 
 #[test]
 fn the_brand_is_trimmed_of_padding() {
-    let text = b"  AMD Ryzen 7 7800X3D 8-Core Processor\0\0\0\0\0\0\0\0\0\0";
+    let text = b"  AMD Ryzen 7 7700X 8-Core Processor\0\0\0\0\0\0\0\0\0\0";
     let mut padded = [0u8; 48];
     padded[..text.len().min(48)].copy_from_slice(&text[..text.len().min(48)]);
     let mut words = [0u32; 12];
@@ -41,7 +41,7 @@ fn the_brand_is_trimmed_of_padding() {
         *word = u32::from_le_bytes(*chunk);
     }
 
-    assert_eq!(brand_from_registers(&words), "AMD Ryzen 7 7800X3D 8-Core Processor");
+    assert_eq!(brand_from_registers(&words), "AMD Ryzen 7 7700X 8-Core Processor");
 }
 
 #[test]

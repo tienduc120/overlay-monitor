@@ -7,7 +7,7 @@
 
 The overlay sits on top of borderless games. An extra window over a game can stop Windows from handing the game's frames straight to the display (independent flip). The game is then composed by the desktop window manager, and FreeSync stops following its frame rate. The spec's anti-goal is silently costing a game FreeSync or a frame of latency. Two ways to present the overlay were built as a spike: a layered window (`UpdateLayeredWindow`) and a composition swap chain (DirectComposition). The owner measured both with PresentMon 2.6.0 on 2026-11-13.
 
-Setup: Path of Exile (`PathOfExile.exe`, DXGI, sync interval 0, no tearing flag), borderless, on the main monitor (2560x1440 at 240 Hz, Radeon RX 9060 XT, FreeSync on in AMD Software). Each run is 20 seconds of normal play in the same kind of scene.
+Setup: a borderless DXGI game (sync interval 0, no tearing flag) on a 240 Hz monitor with FreeSync on in the GPU driver. Each run is 20 seconds of normal play in the same kind of scene.
 
 | Run | Presents | Present mode | Frame rate | Display intervals |
 | --- | --- | --- | --- | --- |

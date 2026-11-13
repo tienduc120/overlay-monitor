@@ -54,7 +54,7 @@ fn customised() -> Settings {
     let defaults = Settings::default();
     let mut settings = Settings {
         update_interval: Duration::from_millis(2500),
-        gpu: Some(String::from("AMD Radeon RX 9060 XT")),
+        gpu: Some(String::from("AMD Radeon RX 7800 XT")),
         show_hide: ShortcutKeys::parse("Ctrl+Alt+F9").expect("a usable shortcut"),
         lock_unlock: ShortcutKeys::parse("Alt+Shift+L").expect("a usable shortcut"),
         start_with_windows: true,

@@ -15,7 +15,7 @@ use super::{
 };
 
 fn gpu_names() -> Vec<String> {
-    vec!["Radeon RX 9060 XT".to_owned(), "AMD Radeon(TM) Graphics".to_owned()]
+    vec!["Radeon RX 7800 XT".to_owned(), "AMD Radeon(TM) Graphics".to_owned()]
 }
 
 /// The entries the family drop-down holds for a window opened with Consolas.
@@ -209,7 +209,7 @@ fn choosing_an_adapter_previews_its_name() {
     let WindowOutcome::Preview(settings) = outcome else {
         panic!("expected a preview, got {outcome:?}");
     };
-    assert_eq!(settings.gpu.as_deref(), Some("Radeon RX 9060 XT"));
+    assert_eq!(settings.gpu.as_deref(), Some("Radeon RX 7800 XT"));
 }
 
 #[test]

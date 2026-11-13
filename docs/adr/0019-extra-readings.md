@@ -20,8 +20,8 @@ The spec lists "readings beyond the four lines" as a non-goal. This decision dep
 3. **Zero rules.** A driver leaves a field at 0 when it does not report it, and a zero-rpm fan also reports 0 at rest, so the fan is `—` until it has turned once in this run, after which every value, 0 included, is real. A VRAM clock of 0 is `—`. A GPU without a video engine, a frame rate with fewer than two presents, and a missing hub scan show `—`.
 4. **Fixed widths.** Each value has a fixed width, right-aligned, and `—` takes the same width, so a column never jumps. The formats are in the plan and in the code that renders them.
 5. **Left out**, because each would need another query or says too little:
-   - `Power`: a share of an unstated limit in tenths of a percent, and 0 on the owner's card.
-   - `MemoryBandwidth` and `PCIEBandwidth`: 0 and a constant 3 on the owner's card, with a driver-defined meaning.
+   - `Power`: a share of an unstated limit in tenths of a percent, and 0 on the test card.
+   - `MemoryBandwidth` and `PCIEBandwidth`: 0 and a constant 3 on the test card, with a driver-defined meaning.
    - `MaxMemoryFrequency`, `MaxMemoryFrequencyOC`, and the VRAM size: constants.
    - The CPU kernel and user split: noise next to the load.
    - Commit charge: page-file backed, rarely what a game feels.

@@ -30,7 +30,7 @@ Works over the desktop and borderless or windowed games, on Windows 10 1809 or l
 | GPU | load, temperature | fan speed, VRAM clock, video engine load |
 | Memory (`DDR5`, or `RAM` otherwise) | load, temperature of the hottest stick | GB used, each stick's temperature |
 
-A value the PC cannot give shows `—`, never a guess, and so does a value that stops updating. CPU and memory temperatures need PawnIO and administrator; FPS needs administrator (or the "Performance Log Users" group); everything else needs neither. Tested on an AMD Ryzen 7 7800X3D, Radeon RX 9060 XT, and DDR5 on an AMD board; Intel CPUs, Intel-board DDR5, and DDR4 are implemented but untested.
+A value the PC cannot give shows `—`, never a guess, and so does a value that stops updating. CPU and memory temperatures need PawnIO and administrator; FPS needs administrator (or the "Performance Log Users" group); everything else needs neither. Intel CPUs, Intel-board DDR5, DDR4, and Windows 10 are implemented but not yet tested on real hardware.
 
 ![The settings window](docs/images/settings.png)
 
@@ -54,7 +54,7 @@ flowchart LR
     UI <--> CFG[("settings.toml")]
 ```
 
-- **No injection.** The overlay is its own see-through, topmost window that never takes focus (`UpdateLayeredWindow` with per-pixel alpha). Text is laid out with DirectWrite, its coverage is grown into the outline, and the app composes the pixels itself, so no Direct2D or Direct3D is loaded. On the owner's FreeSync setup the overlay made no measurable difference to how games present ([ADR-0016](docs/adr/0016-overlay-presentation.md)).
+- **No injection.** The overlay is its own see-through, topmost window that never takes focus (`UpdateLayeredWindow` with per-pixel alpha). Text is laid out with DirectWrite, its coverage is grown into the outline, and the app composes the pixels itself, so no Direct2D or Direct3D is loaded. In a FreeSync test the overlay made no measurable difference to how a game presents ([ADR-0016](docs/adr/0016-overlay-presentation.md)).
 - **FPS** counts the foreground app's frames from the DirectX kernel's `Present` events, the way PresentMon does; Xbox-app games are followed to the process that actually presents.
 - **Loads** come from `GetSystemTimes`, `GlobalMemoryStatusEx`, and the GPU engine counters Task Manager uses. **GPU temperature, fan, and VRAM clock** come from the driver's adapter performance data (D3DKMT).
 - **CPU and DDR5 temperatures** go through the signed [PawnIO](https://github.com/namazso/PawnIO) driver: AMD's SMN register or Intel's thermal MSRs, and the SPD5118 sensor hubs on the memory's SMBus. Hardware is only ever read, under the same shared locks HWiNFO and LibreHardwareMonitor take.

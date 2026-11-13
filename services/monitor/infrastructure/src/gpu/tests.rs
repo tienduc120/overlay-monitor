@@ -17,9 +17,9 @@ fn adapter(name: &str, luid: u64, gib: u64) -> GpuAdapter {
 fn the_adapter_with_the_most_dedicated_memory_is_followed() {
     let list = [
         adapter("AMD Radeon(TM) Graphics", 1, 0),
-        adapter("AMD Radeon RX 9060 XT", 0xD3E5, 16),
+        adapter("AMD Radeon RX 7800 XT", 0xD3E5, 16),
     ];
-    assert_eq!(pick_adapter(&list).unwrap().name, "AMD Radeon RX 9060 XT");
+    assert_eq!(pick_adapter(&list).unwrap().name, "AMD Radeon RX 7800 XT");
 }
 
 #[test]
@@ -130,9 +130,9 @@ fn an_adapter_without_video_engines_has_no_video_load() {
 #[test]
 fn the_gpu_sensors_name_their_adapter_in_the_details() {
     assert_eq!(
-        GpuTemperature::new(0xD3E5, "AMD Radeon RX 9060 XT")
+        GpuTemperature::new(0xD3E5, "AMD Radeon RX 7800 XT")
             .details()
             .as_deref(),
-        Some("adapter AMD Radeon RX 9060 XT")
+        Some("adapter AMD Radeon RX 7800 XT")
     );
 }
