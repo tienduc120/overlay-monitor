@@ -7,16 +7,18 @@ use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 
 use monitor_application::{
-    GpuPair, GpuSensors, OverlayFrame, Sampler, SamplerControl, Sensor, Sensors, Settings, SettingsStore, load_settings,
+    GpuPair, GpuSensors, OverlayFrame, Sampler, SamplerControl, Sensor, Sensors, Settings, SettingsStore, StartupTask,
+    load_settings,
 };
 use monitor_domain::MemoryKind;
 use monitor_infrastructure::{
     AdapterSensors, CpuLoad, Ddr5Temperature, FrameCounter, FrameRate, MemoryLoad, PRESENT_PROVIDERS, RyzenTemperature,
-    TomlSettingsStore, UnavailableSensor, is_present, or_unavailable, settings_path,
+    SchtasksStartup, TASK_NAME, TomlSettingsStore, UnavailableSensor, is_present, or_unavailable, settings_path,
 };
 use monitor_interfaces::{OverlayView, Ui, UiParts};
 use platform_clock::{Clock, SystemClock};
 use platform_win32::Win32Error;
+use platform_win32::account::current_user_sid;
 use platform_win32::dpi::{enable_per_monitor_awareness, small_icon_size};
 use platform_win32::etw::{TraceConsumer, TraceSession, start_session, stop_session};
 use platform_win32::gpu::{GpuAdapter, gpu_adapters};
@@ -92,6 +94,11 @@ pub fn run() -> ExitCode {
     let store: Box<dyn SettingsStore> = Box::new(TomlSettingsStore::new(settings_file()));
     // Task 15 detects the memory; until then the DDR5 layout is the default.
     let settings = load_settings(store.as_ref(), MemoryKind::Ddr5);
+    if settings.start_with_windows
+        && let Some(task) = own_startup_task()
+    {
+        refresh_startup_task(&settings, &task);
+    }
     let adapters = listed_adapters();
     let gpu_names = adapters.iter().map(|adapter| adapter.name.clone()).collect();
     let mut gpus = AdapterSensors::new(adapters);
@@ -121,6 +128,28 @@ fn install_subscriber() {
         .with_writer(std::io::stderr)
         .with_env_filter(filter)
         .init();
+}
+
+/// Registers the start at sign-in again when the setting is on, so the task follows an exe that moved. A refusal is
+/// logged; the app runs either way.
+pub fn refresh_startup_task(settings: &Settings, task: &dyn StartupTask) {
+    if settings.start_with_windows
+        && let Err(error) = task.set(true)
+    {
+        tracing::warn!(?error, "register the start with Windows again");
+    }
+}
+
+/// The task for this exe and this user, or `None` when either cannot be named.
+fn own_startup_task() -> Option<SchtasksStartup> {
+    let exe = std::env::current_exe()
+        .inspect_err(|error| tracing::warn!(?error, "the exe is unknown, so the startup task is not refreshed"))
+        .ok()?;
+    let sid = current_user_sid()
+        .inspect_err(|error| tracing::warn!(?error, "the user is unknown, so the startup task is not refreshed"))
+        .ok()?;
+    let work_dir = settings_file().parent()?.to_path_buf();
+    Some(SchtasksStartup::new(TASK_NAME, exe, sid, work_dir))
 }
 
 /// Every GPU adapter Windows lists, or none when the list cannot be had.

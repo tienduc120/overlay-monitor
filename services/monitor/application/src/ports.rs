@@ -53,6 +53,20 @@ pub struct Sensors {
     pub memory_temp: Box<dyn Sensor>,
 }
 
+/// Whether the app starts when the user signs in to Windows.
+pub trait StartupTask {
+    /// Registers the start at sign-in when `on`, removes it otherwise. Removing what is not there succeeds.
+    ///
+    /// # Errors
+    /// `StartupTaskError` when Windows refused or the task scheduler could not be run.
+    fn set(&self, on: bool) -> Result<(), StartupTaskError>;
+}
+
+/// The start at sign-in could not be changed.
+#[derive(Debug, thiserror::Error)]
+#[error("the start with Windows could not be changed")]
+pub struct StartupTaskError(#[source] pub Box<dyn std::error::Error + Send + Sync>);
+
 /// Where the settings live between runs. `Ok(None)` means there is no file yet.
 pub trait SettingsStore {
     /// # Errors

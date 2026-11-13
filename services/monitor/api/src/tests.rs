@@ -2,12 +2,12 @@ use std::cell::Cell;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 
-use monitor_application::testing::{FakeGpuSensors, FakeSensor};
+use monitor_application::testing::{FakeGpuSensors, FakeSensor, FakeStartupTask};
 use monitor_application::{GpuPair, Line, ReadError, Sampler, Sensor, Sensors, Settings};
 use monitor_infrastructure::{FrameCounter, UnavailableSensor};
 use platform_clock::{FixedClock, Timestamp};
 
-use super::{SamplerControl, build_sensors, modules_dir, sample_until_stopped};
+use super::{SamplerControl, build_sensors, modules_dir, refresh_startup_task, sample_until_stopped};
 
 fn fixed_sensors() -> Sensors {
     let fixed = || -> Box<dyn Sensor> { Box::new(FakeSensor::fixed(50.0)) };
@@ -129,4 +129,39 @@ fn an_apply_message_samples_again_at_once() {
     assert!(all[0].lines.iter().any(|l| l.starts_with("FPS:")));
     assert!(all[1].lines.iter().all(|l| !l.starts_with("FPS:")));
     assert_eq!(wakes.get(), 2);
+}
+
+#[test]
+fn the_startup_task_is_registered_again_at_start_when_the_setting_is_on() {
+    let task = FakeStartupTask::default();
+    let settings = Settings {
+        start_with_windows: true,
+        ..Settings::default()
+    };
+
+    refresh_startup_task(&settings, &task);
+
+    assert_eq!(task.calls(), [true]);
+}
+
+#[test]
+fn the_startup_task_is_left_alone_at_start_when_the_setting_is_off() {
+    let task = FakeStartupTask::default();
+
+    refresh_startup_task(&Settings::default(), &task);
+
+    assert_eq!(task.calls(), Vec::<bool>::new());
+}
+
+#[test]
+fn a_refused_startup_task_does_not_stop_the_start() {
+    let task = FakeStartupTask::failing();
+    let settings = Settings {
+        start_with_windows: true,
+        ..Settings::default()
+    };
+
+    refresh_startup_task(&settings, &task);
+
+    assert_eq!(task.calls(), [true]);
 }

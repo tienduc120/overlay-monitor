@@ -8,6 +8,7 @@ mod pawn_support;
 mod ryzen;
 mod settings_file;
 mod spd5118;
+mod startup_task;
 mod unavailable;
 
 pub use cpu_load::CpuLoad;
@@ -17,4 +18,5 @@ pub use memory_load::MemoryLoad;
 pub use ryzen::RyzenTemperature;
 pub use settings_file::{TomlSettingsStore, settings_path};
 pub use spd5118::Ddr5Temperature;
+pub use startup_task::{SchtasksStartup, TASK_NAME, task_xml, utf16_with_bom};
 pub use unavailable::{UnavailableSensor, or_unavailable};

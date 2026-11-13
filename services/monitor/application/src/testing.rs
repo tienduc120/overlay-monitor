@@ -7,6 +7,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 
 use crate::{
     Extras, GpuPair, GpuSensors, LoadSettingsError, ReadError, SaveSettingsError, Sensor, Settings, SettingsStore,
+    StartupTask, StartupTaskError,
 };
 
 /// Answers in order, then keeps repeating the last answer.
@@ -157,5 +158,41 @@ impl GpuSensors for FakeGpuSensors {
             load: Box::new(FakeSensor::fixed(11.0)),
             temp: Box::new(FakeSensor::fixed(66.0)),
         }
+    }
+}
+
+#[derive(Debug, Default)]
+struct StartupRecord {
+    failing: bool,
+    calls: Vec<bool>,
+}
+
+/// A startup task that only records what it was told. A clone shares the one record.
+#[derive(Clone, Debug, Default)]
+pub struct FakeStartupTask(Arc<Mutex<StartupRecord>>);
+
+impl FakeStartupTask {
+    /// Refuses every `set`, still recording the call.
+    pub fn failing() -> Self {
+        Self(Arc::new(Mutex::new(StartupRecord {
+            failing: true,
+            calls: Vec::new(),
+        })))
+    }
+
+    /// Every value `set` was called with, in order.
+    pub fn calls(&self) -> Vec<bool> {
+        self.0.lock().unwrap_or_else(PoisonError::into_inner).calls.clone()
+    }
+}
+
+impl StartupTask for FakeStartupTask {
+    fn set(&self, on: bool) -> Result<(), StartupTaskError> {
+        let mut record = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        record.calls.push(on);
+        if record.failing {
+            return Err(StartupTaskError("access denied".into()));
+        }
+        Ok(())
     }
 }

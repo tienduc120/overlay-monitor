@@ -16,6 +16,7 @@ Overlay Monitor runs on Windows 10 1809 or later, x64.
 - `cargo xtask modules` downloads the pinned PawnIO modules, checks their hashes, and copies them into `target/{debug,release}/modules`. They are LGPL-2.1 and never committed; see [Credits](#credits).
 - `cargo build -p monitor-api --release --features elevated` builds `target\release\overlay-monitor.exe`, whose manifest asks for administrator.
 - Without `--features elevated` the exe runs as the invoking user, which is the default for development and tests; the CPU and DDR5 temperatures then show "—".
+- Start with Windows: when the setting is on, the app creates a Task Scheduler task named "Overlay Monitor" (at sign-in, highest privileges, no time or battery limit) through `schtasks.exe`, and registers it again at each start so it follows the exe. It needs the elevated build, because creating a highest-privileges task needs administrator ([ADR-0020](docs/adr/0020-start-with-windows.md)).
 
 A value that is missing or unreadable shows "—". The tray icon shows or hides the overlay, and its menu exits the app. Drag the overlay anywhere; it snaps to monitor edges.
 
