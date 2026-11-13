@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
-use monitor_application::{ReadError, Sensor};
+use monitor_application::{Extras, ReadError, Sensor};
 use platform_win32::etw::{EventInfo, Provider};
 use platform_win32::foreground::foreground_process_id;
 
@@ -33,10 +33,29 @@ pub fn is_present(event: &EventInfo) -> bool {
     event.provider == DXGKRNL && event.id == PRESENT_INFO
 }
 
+/// A gap between two presents longer than this is the app pausing (a loading screen, a minimised window), not a frame.
+const LONGEST_FRAME_NS: u64 = 1_000_000_000;
+
+/// One process's frames since the last `take`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FrameStats {
+    pub count: u32,
+    /// The longest gap between two consecutive presents; `None` with fewer than two.
+    pub worst_ns: Option<u64>,
+}
+
+#[derive(Debug, Default)]
+struct Tally {
+    count: u32,
+    worst_ns: Option<u64>,
+    /// The last present's time, kept across a `take` so a gap over two readings still counts.
+    last_ns: Option<u64>,
+}
+
 /// Frames per process since the last `take`. The trace consumer records; the sensor takes.
 #[derive(Debug, Default)]
 pub struct FrameCounter {
-    counts: Mutex<BTreeMap<u32, u32>>,
+    tallies: Mutex<BTreeMap<u32, Tally>>,
 }
 
 impl FrameCounter {
@@ -45,21 +64,54 @@ impl FrameCounter {
         Arc::default()
     }
 
-    pub fn record(&self, process_id: u32) {
-        let mut counts = self.lock();
-        let count = counts.entry(process_id).or_default();
-        *count = count.saturating_add(1);
+    /// Records one present of `process_id` at `at_ns` on the trace's clock.
+    pub fn record(&self, process_id: u32, at_ns: u64) {
+        let mut tallies = self.lock();
+        let tally = tallies.entry(process_id).or_default();
+        tally.count = tally.count.saturating_add(1);
+        if let Some(gap) = tally
+            .last_ns
+            .map(|last| at_ns.saturating_sub(last))
+            .filter(|&gap| gap <= LONGEST_FRAME_NS)
+        {
+            tally.worst_ns = tally.worst_ns.max(Some(gap));
+        }
+        tally.last_ns = Some(at_ns);
     }
 
-    /// The counts so far, leaving them at zero.
-    pub fn take(&self) -> BTreeMap<u32, u32> {
-        std::mem::take(&mut *self.lock())
+    /// The stats so far, leaving the counts at zero. A process that presented nothing since the last `take` is
+    /// forgotten, so the map does not grow with every process that ever drew.
+    pub fn take(&self) -> BTreeMap<u32, FrameStats> {
+        let mut tallies = self.lock();
+        let taken = tallies
+            .iter()
+            .filter(|(_, tally)| tally.count > 0)
+            .map(|(&pid, tally)| {
+                let stats = FrameStats {
+                    count: tally.count,
+                    worst_ns: tally.worst_ns,
+                };
+                (pid, stats)
+            })
+            .collect();
+        tallies.retain(|_, tally| tally.count > 0);
+        for tally in tallies.values_mut() {
+            tally.count = 0;
+            tally.worst_ns = None;
+        }
+        taken
     }
 
-    /// The counts are plain numbers, always whole, so a panic elsewhere while holding the lock does not spoil them.
-    fn lock(&self) -> std::sync::MutexGuard<'_, BTreeMap<u32, u32>> {
-        self.counts.lock().unwrap_or_else(PoisonError::into_inner)
+    /// The tallies are plain numbers, always whole, so a panic elsewhere while holding the lock does not spoil them.
+    fn lock(&self) -> std::sync::MutexGuard<'_, BTreeMap<u32, Tally>> {
+        self.tallies.lock().unwrap_or_else(PoisonError::into_inner)
     }
+}
+
+fn ns_to_ms(ns: u64) -> f64 {
+    #[expect(clippy::cast_precision_loss, reason = "a frame time stays far below 2^53 ns")]
+    let ns = ns as f64;
+    ns / 1_000_000.0
 }
 
 /// Below this, one frame more or less swings the rate by 10 or more per second.
@@ -77,6 +129,7 @@ pub struct FrameRate {
     counter: Arc<FrameCounter>,
     own_process_id: u32,
     last_read: Instant,
+    worst_frame_ms: Option<f64>,
 }
 
 impl FrameRate {
@@ -89,6 +142,7 @@ impl FrameRate {
             counter,
             own_process_id,
             last_read: Instant::now(),
+            worst_frame_ms: None,
         }
     }
 }
@@ -103,14 +157,22 @@ impl Sensor for FrameRate {
         }
         self.last_read = now;
         let counts = self.counter.take();
-        let count = rate_for(foreground_process_id(), self.own_process_id, &counts)?;
-        Ok(frames_per_second(count, elapsed))
+        let stats = rate_for(foreground_process_id(), self.own_process_id, &counts)?;
+        self.worst_frame_ms = stats.worst_ns.map(ns_to_ms);
+        Ok(frames_per_second(stats.count, elapsed))
+    }
+
+    fn extras(&self) -> Extras {
+        Extras {
+            worst_frame_ms: self.worst_frame_ms,
+            ..Extras::default()
+        }
     }
 }
 
 /// The foreground app's frame count. Absent frames are `Unavailable`, so the overlay shows `—` at once, never 0 or
 /// the rate of the app that was in front before.
-fn rate_for(foreground: Option<u32>, own: u32, counts: &BTreeMap<u32, u32>) -> Result<u32, ReadError> {
+fn rate_for(foreground: Option<u32>, own: u32, counts: &BTreeMap<u32, FrameStats>) -> Result<FrameStats, ReadError> {
     let app = foreground.ok_or_else(|| ReadError::Unavailable("no window is in front".to_owned()))?;
     if app == own {
         return Err(ReadError::Unavailable("the overlay itself is in front".to_owned()));

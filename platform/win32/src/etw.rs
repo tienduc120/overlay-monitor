@@ -4,7 +4,7 @@
 use std::ffi::c_void;
 use std::mem::offset_of;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
 
 use windows::Win32::Foundation::{ERROR_INVALID_PARAMETER, ERROR_WMI_INSTANCE_NOT_FOUND};
 use windows::Win32::System::Diagnostics::Etw::{
@@ -15,6 +15,7 @@ use windows::Win32::System::Diagnostics::Etw::{
     PROCESS_TRACE_MODE_EVENT_RECORD, PROCESS_TRACE_MODE_REAL_TIME, PROCESSTRACE_HANDLE, ProcessTrace, StartTraceW,
     WNODE_FLAG_TRACED_GUID,
 };
+use windows::Win32::System::Performance::QueryPerformanceFrequency;
 use windows::core::{GUID, HSTRING, PCWSTR, PWSTR};
 
 use crate::Win32Error;
@@ -88,6 +89,26 @@ pub struct EventInfo {
     pub provider: u128,
     pub id: u16,
     pub process_id: u32,
+    /// When the event was logged, in nanoseconds on the performance counter's clock.
+    pub timestamp_ns: u64,
+}
+
+/// Performance counter ticks as nanoseconds; 0 for a negative time or no frequency, and `u64::MAX` past the range.
+fn ticks_to_ns(ticks: i64, frequency: i64) -> u64 {
+    let (Ok(ticks), Ok(frequency)) = (u128::try_from(ticks), u128::try_from(frequency)) else {
+        return 0;
+    };
+    if frequency == 0 {
+        return 0;
+    }
+    u64::try_from(ticks * 1_000_000_000 / frequency).unwrap_or(u64::MAX)
+}
+
+/// What `deliver` finds through the record's context.
+struct Delivery<'a> {
+    on_event: &'a mut (dyn FnMut(&EventInfo) + Send),
+    /// Ticks per second of the event clock, stored once the trace is open and before any event arrives.
+    frequency: &'a AtomicI64,
 }
 
 /// A running real-time session. Dropping it stops it.
@@ -249,9 +270,14 @@ impl TraceConsumer {
     ///
     /// # Errors
     /// The session's trace could not be opened or read.
-    pub fn run(self, mut on_event: &mut (dyn FnMut(&EventInfo) + Send)) -> Result<(), Win32Error> {
+    pub fn run(self, on_event: &mut (dyn FnMut(&EventInfo) + Send)) -> Result<(), Win32Error> {
         let shutdown = &self.shutdown;
-        // `deliver` finds the closure through `on_event`, a local that outlives ProcessTrace below.
+        let frequency = AtomicI64::new(0);
+        let mut delivery = Delivery {
+            on_event,
+            frequency: &frequency,
+        };
+        // `deliver` finds the closure through `delivery`, a local that outlives ProcessTrace below.
         let mut logfile = EVENT_TRACE_LOGFILEW {
             // OpenTraceW only reads the name.
             LoggerName: PWSTR(self.session_name.as_ptr().cast_mut()),
@@ -261,7 +287,7 @@ impl TraceConsumer {
             Anonymous2: EVENT_TRACE_LOGFILEW_1 {
                 EventRecordCallback: Some(deliver),
             },
-            Context: (&raw mut on_event).cast::<c_void>(),
+            Context: (&raw mut delivery).cast::<c_void>(),
             ..EVENT_TRACE_LOGFILEW::default()
         };
         // SAFETY: `logfile` is a live local naming a NUL-terminated session name that outlives the call.
@@ -271,6 +297,8 @@ impl TraceConsumer {
             // A stop that came first leaves no session to open, which is the end the caller asked for.
             return if shutdown.is_over() { Ok(()) } else { Err(refused) };
         }
+        // OpenTraceW wrote the clock's frequency into the header it was given; a zero there is asked of the system once.
+        frequency.store(clock_frequency(logfile.LogfileHeader.PerfFreq), Ordering::SeqCst);
         shutdown.trace.store(trace.Value, Ordering::SeqCst);
         // `abandon` stores its flag before it swaps the trace out, and this stored the trace before it reads the flag,
         // so one of the two sees the other and the trace gets closed.
@@ -280,7 +308,7 @@ impl TraceConsumer {
             return Ok(());
         }
         // SAFETY: the trace is open, or was just closed by `abandon`, in which case ProcessTrace returns at once. Every
-        // event reaches `deliver` on this thread before ProcessTrace returns, and the closure its context points at is
+        // event reaches `deliver` on this thread before ProcessTrace returns, and the delivery its context points at is
         // borrowed for this whole function.
         let processed = unsafe { ProcessTrace(&[trace], None, None) }.ok();
         let closed = shutdown.close_trace();
@@ -298,24 +326,36 @@ impl TraceConsumer {
 ///
 /// # Safety
 /// Only `ProcessTrace` calls this, with a record whose `UserContext` is the `Context` that `TraceConsumer::run` gave
-/// `OpenTraceW`: a pointer to its `&mut` closure.
+/// `OpenTraceW`: a pointer to its `Delivery`.
 unsafe extern "system" fn deliver(record: *mut EVENT_RECORD) {
     // SAFETY: ProcessTrace passes a record that is valid for the duration of this call, or null.
     let Some(record) = (unsafe { record.as_ref() }) else {
         return;
     };
-    let on_event = record.UserContext.cast::<&mut (dyn FnMut(&EventInfo) + Send)>();
-    // SAFETY: per this function's contract the context points at `run`'s closure, which `run` does not touch while
+    let delivery = record.UserContext.cast::<Delivery<'_>>();
+    // SAFETY: per this function's contract the context points at `run`'s delivery, which `run` does not touch while
     // ProcessTrace runs, so this is the only reference to it.
-    let Some(on_event) = (unsafe { on_event.as_mut() }) else {
+    let Some(delivery) = (unsafe { delivery.as_mut() }) else {
         return;
     };
     let header = &record.EventHeader;
-    on_event(&EventInfo {
+    (delivery.on_event)(&EventInfo {
         provider: header.ProviderId.to_u128(),
         id: header.EventDescriptor.Id,
         process_id: header.ProcessId,
+        timestamp_ns: ticks_to_ns(header.TimeStamp, delivery.frequency.load(Ordering::SeqCst)),
     });
+}
+
+/// The trace's tick rate: what `OpenTraceW` wrote, else the performance counter's own.
+fn clock_frequency(reported: i64) -> i64 {
+    if reported > 0 {
+        return reported;
+    }
+    let mut frequency = 0;
+    // SAFETY: the pointer comes from a live, exclusively borrowed local.
+    unsafe { QueryPerformanceFrequency(&raw mut frequency) }.ok();
+    frequency
 }
 
 /// Stops a session by its handle, or by `name` when the handle is null. A session that does not exist counts as

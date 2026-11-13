@@ -1,4 +1,4 @@
-//! GPU adapters and temperature through the kernel-mode thunks (D3DKMT).
+//! GPU adapters and performance data through the kernel-mode thunks (D3DKMT).
 
 use windows::Wdk::Graphics::Direct3D::{
     D3DKMT_ADAPTER_PERFDATA, D3DKMT_ADAPTERINFO, D3DKMT_ADAPTERREGISTRYINFO, D3DKMT_CLOSEADAPTER, D3DKMT_ENUMADAPTERS2,
@@ -92,8 +92,19 @@ pub fn gpu_adapters() -> Result<Vec<GpuAdapter>, Win32Error> {
         .collect())
 }
 
-/// Temperature of the adapter with this LUID in tenths of a degree Celsius; 0 when the driver reports none.
-pub fn gpu_temperature_deci_c(luid: u64) -> Result<u32, Win32Error> {
+/// What one adapter performance query returns that the overlay keeps.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GpuPerf {
+    /// Tenths of a degree Celsius; 0 when the driver reports none.
+    pub temperature_deci_c: u32,
+    /// 0 when the driver reports none, and for a zero-rpm fan at rest.
+    pub fan_rpm: u32,
+    /// Memory clock in hertz; 0 when the driver reports none.
+    pub memory_hz: u64,
+}
+
+/// The performance data of the adapter with this LUID, from one query.
+pub fn gpu_perf_data(luid: u64) -> Result<GpuPerf, Win32Error> {
     let mut open = D3DKMT_OPENADAPTERFROMLUID {
         AdapterLuid: LUID {
             LowPart: u32::try_from(luid & 0xFFFF_FFFF).unwrap_or(0),
@@ -105,7 +116,11 @@ pub fn gpu_temperature_deci_c(luid: u64) -> Result<u32, Win32Error> {
     unsafe { D3DKMTOpenAdapterFromLuid(&raw mut open) }.ok()?;
     let adapter = Handle(open.hAdapter);
     let perf: D3DKMT_ADAPTER_PERFDATA = query(&adapter, KMTQAITYPE_ADAPTERPERFDATA)?;
-    Ok(perf.Temperature)
+    Ok(GpuPerf {
+        temperature_deci_c: perf.Temperature,
+        fan_rpm: perf.FanRPM,
+        memory_hz: perf.MemoryFrequency,
+    })
 }
 
 #[cfg(test)]

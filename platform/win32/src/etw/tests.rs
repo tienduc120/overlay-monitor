@@ -2,7 +2,7 @@ use std::mem::offset_of;
 
 use windows::Win32::System::Diagnostics::Etw::EVENT_FILTER_EVENT_ID;
 
-use super::{EventIdFilter, TraceConsumer, TraceSession, start_session};
+use super::{EventIdFilter, TraceConsumer, TraceSession, start_session, ticks_to_ns};
 
 fn shared_across_threads<T: Send + Sync>() {}
 fn moved_across_threads<T: Send>() {}
@@ -54,4 +54,16 @@ fn a_consumer_whose_session_already_stopped_returns_at_once() {
     let (session, consumer) = start_session("OverlayMonitorStopFirstTest", &[]).unwrap();
     session.stop().unwrap();
     consumer.run(&mut |_| {}).unwrap();
+}
+
+#[test]
+fn ticks_convert_to_nanoseconds() {
+    assert_eq!(ticks_to_ns(10_000_000, 10_000_000), 1_000_000_000);
+    assert_eq!(
+        ticks_to_ns(i64::MAX, 10_000_000),
+        u64::MAX,
+        "too late to count saturates"
+    );
+    assert_eq!(ticks_to_ns(-1, 10_000_000), 0, "a negative time is no time");
+    assert_eq!(ticks_to_ns(5, 0), 0, "no frequency is no time");
 }

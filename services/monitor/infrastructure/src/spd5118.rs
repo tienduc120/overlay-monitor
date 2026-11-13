@@ -2,7 +2,7 @@
 
 use std::path::Path;
 
-use monitor_application::{ReadError, Sensor};
+use monitor_application::{Extras, ReadError, Sensor};
 use platform_win32::pawnio::PawnModule;
 
 use crate::pawn_support::{call_one, load_module, narrow, with_lock};
@@ -39,6 +39,8 @@ pub(crate) struct HubReader<B> {
     bus: B,
     lock: &'static str,
     hubs: Option<Vec<u8>>,
+    /// The last reading of each hub, in address order.
+    last: Vec<f64>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -47,13 +49,18 @@ struct ScanError(#[source] ReadError);
 
 impl<B: SmbusRead> HubReader<B> {
     pub(crate) fn new(bus: B, lock: &'static str) -> Self {
-        Self { bus, lock, hubs: None }
+        Self {
+            bus,
+            lock,
+            hubs: None,
+            last: Vec::new(),
+        }
     }
 
     /// Scans on the first read, under the bus lock. A lock that is busy or a bus that errors fails this read and
     /// leaves the scan for the next one; only a completed scan settles that there is no hub.
     pub(crate) fn read(&mut self) -> Result<f64, ReadError> {
-        let Self { bus, lock, hubs } = self;
+        let Self { bus, lock, hubs, last } = self;
         with_lock(lock, || {
             if hubs.is_none() {
                 *hubs = Some(scan_hubs(bus)?);
@@ -62,13 +69,22 @@ impl<B: SmbusRead> HubReader<B> {
             if known.is_empty() {
                 return Err(ReadError::Unavailable("no DDR5 SPD hub found".to_owned()));
             }
-            let mut hottest = f64::NEG_INFINITY;
+            let mut readings = Vec::with_capacity(known.len());
             for &address in known {
                 let raw = bus.read(address, REG_TEMPERATURE, PROTOCOL_WORD)?;
-                hottest = hottest.max(celsius(narrow("ioctl_smbus_xfer", raw)?));
+                readings.push(celsius(narrow("ioctl_smbus_xfer", raw)?));
             }
+            let hottest = readings.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+            *last = readings;
             Ok(hottest)
         })
+    }
+}
+
+impl<B> HubReader<B> {
+    /// Each stick's last reading in address order; `None` until a scan has found hubs.
+    pub(crate) fn sticks(&self) -> Option<Vec<f64>> {
+        (!self.last.is_empty()).then(|| self.last.clone())
     }
 }
 
@@ -127,6 +143,13 @@ impl std::fmt::Debug for Ddr5Temperature {
 impl Sensor for Ddr5Temperature {
     fn read(&mut self) -> Result<f64, ReadError> {
         self.reader.read()
+    }
+
+    fn extras(&self) -> Extras {
+        Extras {
+            stick_celsius: self.reader.sticks(),
+            ..Extras::default()
+        }
     }
 }
 

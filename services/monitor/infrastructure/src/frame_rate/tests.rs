@@ -6,7 +6,7 @@ use monitor_application::{ReadError, Sensor};
 use platform_win32::etw::{EventInfo, start_session};
 use platform_win32::testing::present_frames;
 
-use super::{FrameCounter, FrameRate, PRESENT_PROVIDERS, frames_per_second, is_present, rate_for};
+use super::{FrameCounter, FrameRate, FrameStats, PRESENT_PROVIDERS, frames_per_second, is_present, rate_for};
 
 const DXGKRNL: u128 = 0x802e_c45a_1e99_4b83_9920_87c9_8277_ba9d;
 const DXGI: u128 = 0xca11_c036_0102_4a2d_a6ad_f03c_fed5_d3c9;
@@ -16,6 +16,7 @@ fn event(provider: u128, id: u16) -> EventInfo {
         provider,
         id,
         process_id: 7,
+        timestamp_ns: 0,
     }
 }
 
@@ -28,23 +29,27 @@ fn frames_per_second_is_count_over_elapsed_seconds() {
 #[test]
 fn each_process_has_its_own_count_and_take_resets_it() {
     let c = FrameCounter::new();
-    c.record(7);
-    c.record(7);
-    c.record(9);
-    assert_eq!(c.take(), BTreeMap::from([(7, 2), (9, 1)]));
+    c.record(7, 0);
+    c.record(7, MS);
+    c.record(9, 0);
+    let counts: BTreeMap<u32, u32> = c.take().into_iter().map(|(pid, stats)| (pid, stats.count)).collect();
+    assert_eq!(counts, BTreeMap::from([(7, 2), (9, 1)]));
     assert!(c.take().is_empty());
 }
 
 #[test]
 fn the_app_in_front_has_its_own_count() {
-    let counts = BTreeMap::from([(5, 60), (9, 30)]);
-    assert!(matches!(rate_for(Some(5), 42, &counts), Ok(60)));
+    let counts = BTreeMap::from([(5, stats(60)), (9, stats(30))]);
+    assert!(matches!(
+        rate_for(Some(5), 42, &counts),
+        Ok(FrameStats { count: 60, .. })
+    ));
 }
 
 #[test]
 fn the_overlay_itself_has_no_frame_rate() {
     assert!(matches!(
-        rate_for(Some(42), 42, &BTreeMap::from([(42, 60)])),
+        rate_for(Some(42), 42, &BTreeMap::from([(42, stats(60))])),
         Err(ReadError::Unavailable(_))
     ));
 }
@@ -120,7 +125,7 @@ fn the_desktop_compositor_presents_frames() {
     let counter = FrameCounter::new();
     let mut count = |event: &EventInfo| {
         if is_present(event) {
-            counter.record(event.process_id);
+            counter.record(event.process_id, event.timestamp_ns);
         }
     };
 
@@ -137,8 +142,60 @@ fn the_desktop_compositor_presents_frames() {
 
     assert!(presented > 0, "the test window presented no frame");
     assert_eq!(
-        counter.take().get(&std::process::id()),
-        Some(&presented),
+        counter.take().get(&std::process::id()).map(|stats| stats.count),
+        Some(presented),
         "each frame this test presented is counted once"
     );
+}
+
+const MS: u64 = 1_000_000;
+
+fn stats(count: u32) -> FrameStats {
+    FrameStats { count, worst_ns: None }
+}
+
+fn worst(counter: &FrameCounter) -> Option<u64> {
+    counter.take().get(&7).and_then(|stats| stats.worst_ns)
+}
+
+#[test]
+fn the_worst_frame_is_the_longest_gap_between_two_presents() {
+    let c = FrameCounter::new();
+    for at in [0, 16_700_000, 50_000_000, 66_700_000] {
+        c.record(7, at);
+    }
+    assert_eq!(worst(&c), Some(33_300_000));
+}
+
+#[test]
+fn a_gap_over_a_second_is_a_pause_not_a_frame() {
+    let c = FrameCounter::new();
+    c.record(7, 0);
+    c.record(7, 20 * MS);
+    c.record(7, 2_000 * MS);
+    assert_eq!(worst(&c), Some(20 * MS), "the pause is not the worst frame");
+}
+
+#[test]
+fn one_present_has_no_worst_frame() {
+    let c = FrameCounter::new();
+    c.record(7, 5 * MS);
+    let taken = c.take();
+    assert_eq!(
+        taken.get(&7),
+        Some(&FrameStats {
+            count: 1,
+            worst_ns: None
+        })
+    );
+}
+
+#[test]
+fn a_gap_across_two_readings_counts() {
+    let c = FrameCounter::new();
+    c.record(7, 0);
+    c.record(7, 10 * MS);
+    c.take();
+    c.record(7, 40 * MS);
+    assert_eq!(worst(&c), Some(30 * MS));
 }

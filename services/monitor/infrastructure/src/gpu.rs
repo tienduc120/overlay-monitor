@@ -2,9 +2,9 @@
 
 use std::collections::BTreeMap;
 
-use monitor_application::{GpuPair, GpuSensors, ReadError, Sensor};
+use monitor_application::{Extras, GpuPair, GpuSensors, ReadError, Sensor};
 use platform_win32::Win32Error;
-use platform_win32::gpu::{GpuAdapter, gpu_temperature_deci_c};
+use platform_win32::gpu::{GpuAdapter, gpu_perf_data};
 use platform_win32::pdh::CounterArray;
 
 use crate::{UnavailableSensor, or_unavailable};
@@ -78,6 +78,14 @@ impl GpuSensors for AdapterSensors {
 /// Instance names look like `pid_1234_luid_0x00000000_0x0000D3E5_phys_0_eng_0_engtype_3D`.
 #[must_use]
 pub fn engine_load_percent(samples: &[(String, f64)], luid: u64) -> Option<f64> {
+    engine_loads(samples, luid)
+        .into_values()
+        .reduce(f64::max)
+        .map(|busiest| busiest.min(100.0))
+}
+
+/// Each lower-cased engine type of one adapter with its load summed over processes.
+fn engine_loads(samples: &[(String, f64)], luid: u64) -> BTreeMap<String, f64> {
     let tag = format!("luid_0x{:08x}_0x{:08x}", luid >> 32, luid & 0xFFFF_FFFF);
     let mut per_type: BTreeMap<String, f64> = BTreeMap::new();
     for (name, value) in samples {
@@ -90,7 +98,33 @@ pub fn engine_load_percent(samples: &[(String, f64)], luid: u64) -> Option<f64> 
         }
     }
     per_type
-        .into_values()
+}
+
+/// The fan's rpm. A fan reading 0 before it has ever turned in this run is more likely a driver that does not report the
+/// fan than one at rest (a zero-rpm fan idles at 0 too), so it stays `None` until the first nonzero reading; after
+/// that every value, 0 included, is real.
+#[must_use]
+pub(crate) fn fan_value(rpm: u32, seen_spinning: &mut bool) -> Option<f64> {
+    *seen_spinning |= rpm > 0;
+    (*seen_spinning).then(|| f64::from(rpm))
+}
+
+/// The VRAM clock in MHz; a driver that does not report it leaves 0.
+#[must_use]
+pub(crate) fn memory_mhz(hz: u64) -> Option<f64> {
+    #[expect(clippy::cast_precision_loss, reason = "a clock stays far below 2^53 Hz")]
+    let mhz = hz as f64 / 1_000_000.0;
+    (hz > 0).then_some(mhz)
+}
+
+/// The busiest video engine of one adapter (decode, encode, or processing), at most 100. JPEG engines are left out:
+/// they are not what a game or a video call uses.
+#[must_use]
+pub(crate) fn video_load_percent(samples: &[(String, f64)], luid: u64) -> Option<f64> {
+    engine_loads(samples, luid)
+        .into_iter()
+        .filter(|(engine_type, _)| engine_type.contains("video") && !engine_type.contains("jpeg"))
+        .map(|(_, load)| load)
         .reduce(f64::max)
         .map(|busiest| busiest.min(100.0))
 }
@@ -100,6 +134,7 @@ pub fn engine_load_percent(samples: &[(String, f64)], luid: u64) -> Option<f64> 
 pub struct GpuLoad {
     counters: CounterArray,
     luid: u64,
+    video: Option<f64>,
 }
 
 impl GpuLoad {
@@ -107,7 +142,11 @@ impl GpuLoad {
     /// `Failed` when the engine counters cannot be opened.
     pub fn open(luid: u64) -> Result<Self, ReadError> {
         let counters = CounterArray::open(ENGINE_UTILIZATION).map_err(|e| failed(GpuError::OpenCounters(e)))?;
-        Ok(Self { counters, luid })
+        Ok(Self {
+            counters,
+            luid,
+            video: None,
+        })
     }
 }
 
@@ -117,7 +156,15 @@ impl Sensor for GpuLoad {
         if samples.is_empty() {
             return Err(failed(GpuError::NoBaseline));
         }
+        self.video = video_load_percent(&samples, self.luid);
         engine_load_percent(&samples, self.luid).ok_or_else(|| failed(GpuError::NoEngines))
+    }
+
+    fn extras(&self) -> Extras {
+        Extras {
+            gpu_video_load: self.video,
+            ..Extras::default()
+        }
     }
 }
 
@@ -125,24 +172,43 @@ impl Sensor for GpuLoad {
 #[derive(Debug)]
 pub struct GpuTemperature {
     luid: u64,
+    fan_rpm: Option<f64>,
+    memory_mhz: Option<f64>,
+    seen_spinning: bool,
 }
 
 impl GpuTemperature {
     #[must_use]
     pub fn new(luid: u64) -> Self {
-        Self { luid }
+        Self {
+            luid,
+            fan_rpm: None,
+            memory_mhz: None,
+            seen_spinning: false,
+        }
     }
 }
 
 impl Sensor for GpuTemperature {
     fn read(&mut self) -> Result<f64, ReadError> {
-        let deci = gpu_temperature_deci_c(self.luid).map_err(|e| failed(GpuError::Temperature(e)))?;
+        let perf = gpu_perf_data(self.luid).map_err(|e| failed(GpuError::Temperature(e)))?;
+        let deci = perf.temperature_deci_c;
         if deci == 0 {
             return Err(ReadError::Unavailable(
                 "this GPU driver does not report temperature".to_owned(),
             ));
         }
+        self.fan_rpm = fan_value(perf.fan_rpm, &mut self.seen_spinning);
+        self.memory_mhz = memory_mhz(perf.memory_hz);
         Ok(f64::from(deci) / 10.0)
+    }
+
+    fn extras(&self) -> Extras {
+        Extras {
+            gpu_fan_rpm: self.fan_rpm,
+            gpu_memory_mhz: self.memory_mhz,
+            ..Extras::default()
+        }
     }
 }
 

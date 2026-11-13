@@ -22,5 +22,6 @@ One file per decision, numbered, never edited after acceptance (supersede it wit
 | [0016](0016-overlay-presentation.md) | Overlay presentation | accepted |
 | [0017](0017-remove-the-backend-template-parts.md) | Remove the backend template parts | accepted |
 | [0018](0018-the-settings-file.md) | The settings file | accepted |
+| [0019](0019-extra-readings.md) | Extra readings come only from calls already made | accepted |
 
 Needs an ADR first: a new external dependency, a hosted service, the toolchain pin or a pinned tool moving, a change to a published contract, or a gate added, loosened, or removed.

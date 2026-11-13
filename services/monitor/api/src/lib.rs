@@ -220,7 +220,7 @@ fn sample_until_stopped<C: Clock>(
 fn count_frames(consumer: TraceConsumer, counter: &FrameCounter) {
     let outcome = consumer.run(&mut |event| {
         if is_present(event) {
-            counter.record(event.process_id);
+            counter.record(event.process_id, event.timestamp_ns);
         }
     });
     if let Err(error) = outcome {

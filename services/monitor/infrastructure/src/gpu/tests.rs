@@ -1,7 +1,9 @@
 use monitor_application::Sensor;
 use platform_win32::gpu::{GpuAdapter, gpu_adapters};
 
-use super::{GpuTemperature, adapter_for, engine_load_percent, pick_adapter};
+use super::{
+    GpuTemperature, adapter_for, engine_load_percent, fan_value, memory_mhz, pick_adapter, video_load_percent,
+};
 
 fn adapter(name: &str, luid: u64, gib: u64) -> GpuAdapter {
     GpuAdapter {
@@ -68,4 +70,59 @@ fn the_followed_gpu_reports_a_plausible_temperature() {
     let a = pick_adapter(&gpu_adapters().unwrap()).cloned().unwrap();
     let t = GpuTemperature::new(a.luid).read().unwrap();
     assert!((20.0..=100.0).contains(&t), "{} {t}", a.name);
+}
+
+#[test]
+fn a_fan_at_0_rpm_shows_only_after_it_has_spun() {
+    let mut seen_spinning = false;
+    assert_eq!(
+        fan_value(0, &mut seen_spinning),
+        None,
+        "a driver that never reports leaves 0"
+    );
+    assert_eq!(fan_value(1200, &mut seen_spinning), Some(1200.0));
+    assert_eq!(
+        fan_value(0, &mut seen_spinning),
+        Some(0.0),
+        "a fan that stopped is real"
+    );
+}
+
+#[test]
+fn a_vram_clock_of_0_is_not_reported() {
+    assert_eq!(memory_mhz(0), None);
+    assert_eq!(memory_mhz(644_000_000), Some(644.0));
+}
+
+fn engines(list: &[(&str, f64)]) -> Vec<(String, f64)> {
+    list.iter()
+        .map(|(engine, value)| {
+            (
+                format!("pid_1_luid_0x00000000_0x0000D3E5_phys_0_eng_0_engtype_{engine}"),
+                *value,
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn video_load_is_the_busiest_video_engine_without_jpeg() {
+    let amd = engines(&[
+        ("3D", 80.0),
+        ("Video Codec 0", 10.0),
+        ("Video Decode 1", 25.0),
+        ("Video JPEG 0", 90.0),
+    ]);
+    assert_eq!(video_load_percent(&amd, 0xD3E5), Some(25.0));
+    let nvidia = engines(&[("3D", 80.0), ("VideoEncode", 40.0)]);
+    assert_eq!(video_load_percent(&nvidia, 0xD3E5), Some(40.0));
+}
+
+#[test]
+fn an_adapter_without_video_engines_has_no_video_load() {
+    assert_eq!(
+        video_load_percent(&engines(&[("3D", 80.0), ("Copy", 5.0)]), 0xD3E5),
+        None
+    );
+    assert_eq!(video_load_percent(&[], 0xD3E5), None);
 }

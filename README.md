@@ -19,6 +19,27 @@ Overlay Monitor runs on Windows 10 1809 or later, x64.
 
 A value that is missing or unreadable shows "—". The tray icon shows or hides the overlay, and its menu exits the app. Drag the overlay anywhere; it snaps to monitor edges.
 
+## Readings
+
+Each line shows the values the settings turn on, in this order. A missing or stale value shows "—". Every value comes from a call the app already makes ([ADR-0019](docs/adr/0019-extra-readings.md)).
+
+| Line | Value | Source | Default |
+| --- | --- | --- | --- |
+| FPS | FPS | graphics kernel `Present_Info` events (ETW) | on |
+| FPS | frame time | `1000 / FPS` | off |
+| FPS | worst frame | longest gap between two presents, from the same events | off |
+| CPU | load | system times | on |
+| CPU | temperature | PawnIO, from the CPU's sensor | on |
+| GPU | load | `GPU Engine` counters, busiest engine type | on |
+| GPU | temperature | D3DKMT adapter performance data | on |
+| GPU | fan | the same performance data; "—" until the fan has turned once | off |
+| GPU | VRAM clock | the same performance data | off |
+| GPU | video | the `GPU Engine` counters, busiest video engine without JPEG | off |
+| Memory | load | physical memory status | on |
+| Memory | used | the same status, in GB | off |
+| Memory | temperature | PawnIO, hottest DDR5 SPD hub | on |
+| Memory | each stick | the same hubs, in address order | off |
+
 ## Settings
 
 The app keeps its settings in `%APPDATA%\OverlayMonitor\settings.toml`, created on the first change. The app rewrites the file when a setting changes, so edit it while the app is closed. Every key is optional; a file that cannot be read is kept as `settings.toml.bad` and the defaults are used. The keys and the rules are in [ADR-0018](docs/adr/0018-the-settings-file.md).

@@ -182,3 +182,19 @@ fn the_hottest_ddr5_stick_reads_a_plausible_value() {
     let t = Ddr5Temperature::open(&modules()).unwrap().read().unwrap();
     assert!((10.0..=95.0).contains(&t), "{t}");
 }
+
+#[test]
+fn each_stick_is_reported_in_address_order() {
+    let mut answers = FakeBus::hub(0x53, 0x0214).to_vec();
+    answers.extend(FakeBus::hub(0x51, 0x0244));
+    let bus = FakeBus::with(&answers);
+    let mut reader = HubReader::new(
+        &bus,
+        "Local\\overlay-monitor-test-ddr5-each_stick_is_reported_in_address_order",
+    );
+    assert_eq!(reader.sticks(), None, "no scan yet");
+
+    reader.read().unwrap();
+
+    assert_eq!(reader.sticks(), Some(vec![36.25, 33.25]));
+}
