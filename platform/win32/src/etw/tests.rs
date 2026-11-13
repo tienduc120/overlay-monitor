@@ -1,4 +1,8 @@
-use super::{TraceConsumer, TraceSession, start_session};
+use std::mem::offset_of;
+
+use windows::Win32::System::Diagnostics::Etw::EVENT_FILTER_EVENT_ID;
+
+use super::{EventIdFilter, TraceConsumer, TraceSession, start_session};
 
 fn shared_across_threads<T: Send + Sync>() {}
 fn moved_across_threads<T: Send>() {}
@@ -7,6 +11,28 @@ fn moved_across_threads<T: Send>() {}
 fn the_session_is_shared_and_the_consumer_moved_to_the_thread_that_runs_it() {
     shared_across_threads::<TraceSession>();
     moved_across_threads::<TraceConsumer>();
+}
+
+#[test]
+fn an_event_filter_lets_in_its_ids_listed_right_after_its_header() {
+    let filter = EventIdFilter::new(&[0xb8, 0x11]).unwrap();
+
+    assert!(filter.header.FilterIn, "the listed ids are let in, not kept out");
+    assert_eq!(filter.header.Count, 2);
+    assert_eq!(filter.header.Events, [0xb8]);
+    assert_eq!(filter.more.first(), Some(&0x11));
+    assert_eq!(
+        offset_of!(EventIdFilter, more),
+        offset_of!(EventIdFilter, header) + offset_of!(EVENT_FILTER_EVENT_ID, Events) + size_of::<u16>(),
+        "the second id must sit right after the first, where ETW reads it"
+    );
+    assert_eq!(filter.size(), 8, "4 bytes of header, then two ids");
+}
+
+#[test]
+fn a_filter_of_more_ids_than_etw_accepts_is_refused() {
+    assert_eq!(EventIdFilter::new(&[0; 64]).ok().map(|f| f.header.Count), Some(64));
+    assert_eq!(EventIdFilter::new(&[0; 65]).ok().map(|f| f.header.Count), None);
 }
 
 #[test]
@@ -20,4 +46,12 @@ fn starting_a_session_twice_with_one_name_succeeds() {
     std::mem::forget(first); // what a crash leaves behind
     let (second, _c2) = start_session("OverlayMonitorTest", &[]).unwrap();
     second.stop().unwrap();
+}
+
+#[test]
+#[ignore = "needs an elevated terminal"]
+fn a_consumer_whose_session_already_stopped_returns_at_once() {
+    let (session, consumer) = start_session("OverlayMonitorStopFirstTest", &[]).unwrap();
+    session.stop().unwrap();
+    consumer.run(&mut |_| {}).unwrap();
 }

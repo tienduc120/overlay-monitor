@@ -13,8 +13,9 @@ use platform_win32::foreground::foreground_process_id;
 const DXGKRNL: u128 = 0x802e_c45a_1e99_4b83_9920_87c9_8277_ba9d;
 /// `Present_Info`, logged as the kernel's present call returns.
 const PRESENT_INFO: u16 = 0x00b8;
-/// Windows 11's `DxgKrnl` files its present and vsync events, not its far busier scheduling ones, under this keyword.
-const PRESENT_KEYWORD: u64 = 0x0800_0000;
+/// `Base` and `Present`: `Present_Info` carries only `Base` before Windows 11 and both from it on. `Base` also covers
+/// the busy GPU scheduling events, which the event id filter keeps out, as `PresentMon` does.
+const BASE_AND_PRESENT_KEYWORDS: u64 = 0x0800_0001;
 /// `Present_Info` is logged at level 0 (always); level 1 keeps the provider's informational events out.
 const CRITICAL: u8 = 1;
 
@@ -22,7 +23,8 @@ const CRITICAL: u8 = 1;
 pub const PRESENT_PROVIDERS: &[Provider] = &[Provider {
     guid: DXGKRNL,
     level: CRITICAL,
-    match_any_keyword: PRESENT_KEYWORD,
+    match_any_keyword: BASE_AND_PRESENT_KEYWORDS,
+    event_ids: &[PRESENT_INFO],
 }];
 
 /// Whether `event` is one frame presented by its process.
@@ -60,6 +62,15 @@ impl FrameCounter {
     }
 }
 
+/// Below this, one frame more or less swings the rate by 10 or more per second.
+const SHORTEST_READING: Duration = Duration::from_millis(100);
+
+#[derive(Debug, thiserror::Error)]
+enum FrameRateError {
+    #[error("only {0:?} passed since the last reading, too short to count frames over")]
+    TooSoon(Duration),
+}
+
 /// Frames per second of the process that owns the foreground window, over the time since the last read.
 #[derive(Debug)]
 pub struct FrameRate {
@@ -85,7 +96,12 @@ impl FrameRate {
 impl Sensor for FrameRate {
     fn read(&mut self) -> Result<f64, ReadError> {
         let now = Instant::now();
-        let elapsed = now.duration_since(std::mem::replace(&mut self.last_read, now));
+        let elapsed = now.duration_since(self.last_read);
+        if elapsed < SHORTEST_READING {
+            // The frames stay counted, so the next reading covers this stretch too.
+            return Err(ReadError::Failed(Box::new(FrameRateError::TooSoon(elapsed))));
+        }
+        self.last_read = now;
         let counts = self.counter.take();
         let count = rate_for(foreground_process_id(), self.own_process_id, &counts)?;
         Ok(frames_per_second(count, elapsed))

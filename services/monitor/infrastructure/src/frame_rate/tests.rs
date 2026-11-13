@@ -2,10 +2,11 @@ use std::collections::BTreeMap;
 use std::sync::mpsc::{self, RecvTimeoutError};
 use std::time::Duration;
 
-use monitor_application::ReadError;
+use monitor_application::{ReadError, Sensor};
 use platform_win32::etw::{EventInfo, start_session};
+use platform_win32::testing::present_frames;
 
-use super::{FrameCounter, PRESENT_PROVIDERS, frames_per_second, is_present, rate_for};
+use super::{FrameCounter, FrameRate, PRESENT_PROVIDERS, frames_per_second, is_present, rate_for};
 
 const DXGKRNL: u128 = 0x802e_c45a_1e99_4b83_9920_87c9_8277_ba9d;
 const DXGI: u128 = 0xca11_c036_0102_4a2d_a6ad_f03c_fed5_d3c9;
@@ -77,24 +78,67 @@ fn only_the_kernels_present_event_is_a_frame() {
     );
 }
 
-// The frames come from apps drawing through the compositor, such as the terminal showing this run: the compositor's
-// own frames are not an app's presents, so on a desktop where nothing draws for 2 s this sees none.
+#[test]
+fn a_read_right_after_the_last_is_too_short_to_count_and_keeps_the_last_value() {
+    let mut rate = FrameRate::new(FrameCounter::new(), 42);
+    assert!(
+        matches!(rate.read(), Err(ReadError::Failed(_))),
+        "one frame in a few milliseconds would read as hundreds per second"
+    );
+}
+
+#[test]
+fn present_info_is_asked_for_under_the_keyword_every_windows_logs_it_with_and_alone() {
+    const BASE: u64 = 0x1;
+    let [kernel] = PRESENT_PROVIDERS else {
+        panic!("one provider, the graphics kernel: {PRESENT_PROVIDERS:?}");
+    };
+    assert_eq!(kernel.guid, DXGKRNL);
+    assert_ne!(
+        kernel.match_any_keyword & BASE,
+        0,
+        "before Windows 11, Present_Info carries only the Base keyword"
+    );
+    assert_eq!(
+        kernel.event_ids,
+        [0xb8],
+        "Base also covers the busy scheduling events, so only Present_Info is let in"
+    );
+}
+
+fn wait(time: Duration) {
+    let (_still_open, never) = mpsc::channel::<()>();
+    assert_eq!(never.recv_timeout(time), Err(RecvTimeoutError::Timeout));
+}
+
+// The compositor's own frames are not an app's presents, and nothing else may draw during the test, so the test
+// presents frames of its own through the compositor and checks that each is counted once.
 #[test]
 #[ignore = "needs an elevated terminal"]
 fn the_desktop_compositor_presents_frames() {
     let (session, consumer) = start_session("OverlayMonitorFrameTest", PRESENT_PROVIDERS).unwrap();
-    let mut frames = 0u32;
+    let counter = FrameCounter::new();
+    let mut count = |event: &EventInfo| {
+        if is_present(event) {
+            counter.record(event.process_id);
+        }
+    };
 
-    std::thread::scope(|s| {
-        let consuming = s.spawn(|| consumer.run(&mut |event| frames += u32::from(is_present(event))));
-        let (_still_open, two_seconds) = mpsc::channel::<()>();
-        assert_eq!(
-            two_seconds.recv_timeout(Duration::from_secs(2)),
-            Err(RecvTimeoutError::Timeout)
-        );
+    let presented = std::thread::scope(|s| {
+        let consuming = s.spawn(|| consumer.run(&mut count));
+        // The consumer connects within milliseconds; this leaves it ample time before the first frame.
+        wait(Duration::from_millis(500));
+        let presented = present_frames(10).unwrap();
+        wait(Duration::from_millis(1500));
         session.stop().unwrap();
         consuming.join().unwrap().unwrap();
+        presented
     });
 
-    assert!(frames > 0, "no frame was presented in 2 s");
+    assert!(presented > 0, "the test window presented no frame");
+    assert_eq!(
+        counter.take().get(&std::process::id()),
+        Some(&presented),
+        "each frame this test presented is counted once"
+    );
 }

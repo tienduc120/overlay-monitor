@@ -12,5 +12,8 @@ monitor-application = { path = "../application" }
 platform-win32 = { workspace = true }
 thiserror = { workspace = true, features = ["std"] }
 
+[dev-dependencies]
+platform-win32 = { workspace = true, features = ["test-support"] }
+
 [lints]
 workspace = true

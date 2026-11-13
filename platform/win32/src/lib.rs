@@ -11,5 +11,7 @@ pub mod memory;
 pub mod mutex;
 pub mod pawnio;
 pub mod pdh;
+#[cfg(feature = "test-support")]
+pub mod testing;
 
 pub use windows::core::Error as Win32Error;
