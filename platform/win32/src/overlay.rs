@@ -1,8 +1,8 @@
 //! The overlay: a see-through, always-on-top window that shows outlined text, moves when dragged anywhere, and never
 //! takes focus.
 //!
-//! It is a layered window: Direct2D draws into a 32-bit DIB with premultiplied alpha, and `UpdateLayeredWindow` hands
-//! the bits to the compositor. Everything about that presentation stays in this file. ADR-0016 records why it is
+//! It is a layered window: the text is painted into a 32-bit DIB with premultiplied alpha, and `UpdateLayeredWindow`
+//! hands the bits to the compositor. Everything about that presentation stays in this file. ADR-0016 records why it is
 //! layered and what would reopen the choice.
 
 use std::cell::RefCell;
@@ -13,12 +13,6 @@ use windows::Win32::Foundation::{
     COLORREF, E_INVALIDARG, E_UNEXPECTED, ERROR_CLASS_ALREADY_EXISTS, HINSTANCE, HWND, LPARAM, LRESULT, POINT, RECT,
     SIZE, WPARAM,
 };
-use windows::Win32::Graphics::Direct2D::Common::{D2D1_ALPHA_MODE_PREMULTIPLIED, D2D1_PIXEL_FORMAT};
-use windows::Win32::Graphics::Direct2D::{
-    D2D1_FEATURE_LEVEL_DEFAULT, D2D1_RENDER_TARGET_PROPERTIES, D2D1_RENDER_TARGET_TYPE_SOFTWARE,
-    D2D1_RENDER_TARGET_USAGE_NONE, D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE, ID2D1DCRenderTarget, ID2D1Factory,
-};
-use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_B8G8R8A8_UNORM;
 use windows::Win32::Graphics::Gdi::{
     AC_SRC_ALPHA, AC_SRC_OVER, BI_RGB, BITMAPINFO, BITMAPINFOHEADER, BLENDFUNCTION, CreateCompatibleDC,
     CreateDIBSection, DIB_RGB_COLORS, DeleteDC, DeleteObject, GdiFlush, GetMonitorInfoW, HBITMAP, HDC, HGDIOBJ,
@@ -42,7 +36,7 @@ use crate::dpi::{dips_from_points, pixels_from_dips};
 use crate::icon::WindowIcons;
 use crate::placement::{MonitorPlacement, monitors, named_monitor, resolve_origin};
 use crate::snap::{Edges, Rect, keep_snapped, snap_while_moving, touching};
-use crate::text::{TextPainter, TextStyle};
+use crate::text::{TextPainter, TextStyle, paint};
 use crate::ui::{EventSink, UiEvent};
 
 const CLASS: PCWSTR = w!("OverlayMonitorOverlay");
@@ -68,7 +62,6 @@ struct Shared {
 struct Canvas {
     window: HWND,
     text: TextPainter,
-    target: ID2D1DCRenderTarget,
     /// Recreated whenever the window's size changes.
     surface: Option<Surface>,
     /// What was drawn last, to draw again at a new DPI.
@@ -83,11 +76,10 @@ impl OverlayWindow {
     /// to `sink`.
     ///
     /// # Errors
-    /// The window class, the window, or its Direct2D render target could not be created.
+    /// The window class, the window, or DirectWrite could not be created.
     pub fn create(sink: EventSink) -> Result<Self, Win32Error> {
         let instance = register_class()?;
         let text = TextPainter::new()?;
-        let target = dc_render_target(text.factory())?;
         let origin = primary_work_area_origin();
         // SAFETY: the class is registered; there is no parent, menu, or creation data.
         let window = unsafe {
@@ -109,7 +101,6 @@ impl OverlayWindow {
         let canvas = Canvas {
             window,
             text,
-            target,
             surface: None,
             last: None,
             edges: None,
@@ -246,25 +237,14 @@ impl Canvas {
     fn render(&mut self, lines: &[String], style: &TextStyle, dpi: u32) -> Result<(), Win32Error> {
         let em_px = pixels_from_dips(dips_from_points(style.size_pt), dpi);
         let pad = padding(style.outline_px);
-        let text = self.text.outline(lines, style, em_px, (pad, pad))?;
+        let text = self.text.lay_out(lines, style, em_px, (pad, pad))?;
         let (width, height) = window_size(text.width, text.height, style.outline_px);
         let surface = sized_surface(&mut self.surface, width, height)?;
-        surface.fill(premultiplied_bgra(style.background_rgb, style.background_alpha));
-
-        let area = RECT {
-            left: 0,
-            top: 0,
-            right: width,
-            bottom: height,
-        };
-        // SAFETY: the DC holds the surface's bitmap, and `area` is a live local that covers it.
-        unsafe { self.target.BindDC(surface.dc, &raw const area) }?;
-        // SAFETY: only this canvas draws to the target, on this thread, and the draw is ended below.
-        unsafe { self.target.BeginDraw() };
-        let painted = self.text.paint(&self.target, &text, style);
-        // SAFETY: ends the draw begun above; no tags are wanted.
-        let ended = unsafe { self.target.EndDraw(None, None) };
-        painted.and(ended)?;
+        let (columns, rows) = surface.dimensions();
+        let fill = self.text.coverage(&text, columns, rows)?;
+        let pixels = surface.pixels_mut();
+        pixels.fill(premultiplied_bgra(style.background_rgb, style.background_alpha));
+        paint(pixels, &fill, style);
         present(self.window, surface, &mut self.edges)
     }
 
@@ -335,13 +315,13 @@ fn per_pixel_alpha() -> BLENDFUNCTION {
     }
 }
 
-/// A 32-bit top-down DIB selected into its own memory DC: what Direct2D draws into and the window shows.
+/// A 32-bit top-down DIB selected into its own memory DC: what the text is painted into and the window shows.
 struct Surface {
     dc: HDC,
     bitmap: HBITMAP,
     /// The DC's original bitmap, put back before the DC is deleted.
     original: HGDIOBJ,
-    pixels: *mut u32,
+    pixels: *mut [u8; 4],
     len: usize,
     size: SIZE,
 }
@@ -385,14 +365,20 @@ impl Surface {
         })
     }
 
-    /// Sets every pixel to `pixel`, given as the bytes of one DIB pixel.
-    fn fill(&mut self, pixel: [u8; 4]) {
+    /// The bitmap's width and height in pixels.
+    fn dimensions(&self) -> (usize, usize) {
+        // Both were checked positive when the bitmap was made.
+        let side = |pixels: i32| usize::try_from(pixels).unwrap_or(0);
+        (side(self.size.cx), side(self.size.cy))
+    }
+
+    /// The bitmap's pixels, row by row from the top, each as blue, green, red, and alpha.
+    fn pixels_mut(&mut self) -> &mut [[u8; 4]] {
         // SAFETY: flushing GDI's batched calls has no preconditions; it must come before the bits are written.
         unsafe { GdiFlush() }.as_bool();
-        // SAFETY: `pixels` points to the DIB's `len` pixels, which live as long as the bitmap this surface owns, and
-        // nothing else reads or writes them during this call.
-        let pixels = unsafe { std::slice::from_raw_parts_mut(self.pixels, self.len) };
-        pixels.fill(u32::from_ne_bytes(pixel));
+        // SAFETY: `pixels` points to the DIB's `len` pixels of four bytes each, which live as long as the bitmap this
+        // surface owns; the borrow of the surface keeps anything else from reading or writing them meanwhile.
+        unsafe { std::slice::from_raw_parts_mut(self.pixels, self.len) }
     }
 }
 
@@ -425,29 +411,6 @@ fn pixel_count(width: i32, height: i32) -> Option<usize> {
     let width = usize::try_from(width).ok().filter(|&width| width > 0)?;
     let height = usize::try_from(height).ok().filter(|&height| height > 0)?;
     width.checked_mul(height)
-}
-
-/// A Direct2D target that draws into whatever DC it is bound to: on the CPU, so the overlay leaves the GPU to the
-/// game, with premultiplied alpha, at 96 DPI because the text is already sized in the monitor's pixels.
-fn dc_render_target(factory: &ID2D1Factory) -> Result<ID2D1DCRenderTarget, Win32Error> {
-    let properties = D2D1_RENDER_TARGET_PROPERTIES {
-        r#type: D2D1_RENDER_TARGET_TYPE_SOFTWARE,
-        pixelFormat: D2D1_PIXEL_FORMAT {
-            format: DXGI_FORMAT_B8G8R8A8_UNORM,
-            alphaMode: D2D1_ALPHA_MODE_PREMULTIPLIED,
-        },
-        dpiX: 96.0,
-        dpiY: 96.0,
-        usage: D2D1_RENDER_TARGET_USAGE_NONE,
-        minLevel: D2D1_FEATURE_LEVEL_DEFAULT,
-    };
-    // SAFETY: `properties` is a live local.
-    let target = unsafe { factory.CreateDCRenderTarget(&raw const properties) }?;
-    // ClearType needs an opaque background; on a see-through window it fringes. The outlines are geometry, but any
-    // text drawn as glyph runs must stay grayscale too.
-    // SAFETY: the target was just created.
-    unsafe { target.SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE) };
-    Ok(target)
 }
 
 fn register_class() -> Result<HINSTANCE, Win32Error> {

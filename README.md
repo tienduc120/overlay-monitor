@@ -123,3 +123,4 @@ This base stands on public work. Material that is copied or adapted is listed in
 | [Linux `k10temp` driver](https://docs.kernel.org/hwmon/k10temp.html) (GPL-2.0) | the Tctl offsets for Zen 1 and Zen+ parts (`tctl_offset_table`): the values only, no code |
 | Intel 64 and IA-32 Architectures Software Developer's Manual, Volume 4 | the layout of MSRs 0x1B1 (package thermal status) and 0x1A2 (temperature target) |
 | DMTF SMBIOS Reference Specification (DSP0134), type 17 (memory device) | reading the installed memory's type from the firmware table: the structure walk and the type codes |
+| Stefan Gustavson and Robin Strand, "Anti-aliased Euclidean distance transform", Pattern Recognition Letters 32 (2011) | reading a partly covered pixel's coverage as how far the edge lies past its centre, which grows the overlay's outline from the glyphs' coverage |

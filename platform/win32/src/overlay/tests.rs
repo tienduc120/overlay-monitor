@@ -433,3 +433,59 @@ fn click_through_comes_and_goes_with_the_lock() {
     assert_ne!(locked & layered, 0, "it stays layered");
     assert_ne!(unlocked & layered, 0, "it stays layered");
 }
+
+/// What the overlay draws, as its window shows it: premultiplied BGRA rows after a little-endian width and height, in
+/// `%TEMP%\overlay-monitor-pixels\<name>.bgra`, so a renderer change can be compared pixel by pixel.
+#[test]
+#[ignore = "writes the overlay's pixels to the temp folder for a visual check"]
+fn writes_the_drawn_pixels_for_a_visual_check() {
+    crate::dpi::enable_per_monitor_awareness().unwrap();
+    let folder = std::env::temp_dir().join("overlay-monitor-pixels");
+    std::fs::create_dir_all(&folder).unwrap();
+    let four = lines(&[
+        "FPS:   30 FPS",
+        "CPU:   2.0 %, 45.8 °C",
+        "GPU:   4.0 %, 56.0 °C",
+        "DDR5: 30.9 %, 35.5 °C",
+    ]);
+    let varied = TextStyle {
+        font_family: String::from("Segoe UI"),
+        size_pt: 20.0,
+        bold: false,
+        italic: true,
+        text_rgb: 0xFF_E0_40,
+        outline_rgb: 0x40_00_80,
+        outline_px: 3.0,
+        background_rgb: 0x00_40_FF,
+        background_alpha: 128,
+    };
+    let styles = [
+        ("default", style()),
+        (
+            "1px",
+            TextStyle {
+                outline_px: 1.0,
+                ..style()
+            },
+        ),
+        (
+            "4px",
+            TextStyle {
+                outline_px: 4.0,
+                ..style()
+            },
+        ),
+        ("varied", varied),
+    ];
+    for (name, style) in styles {
+        let mut window = OverlayWindow::create(EventSink::discard()).unwrap();
+        window.draw(&four, &style).unwrap();
+        let mut canvas = window.shared.canvas.borrow_mut();
+        let surface = canvas.surface.as_mut().unwrap();
+        let mut bytes = Vec::new();
+        bytes.extend(surface.size.cx.to_le_bytes());
+        bytes.extend(surface.size.cy.to_le_bytes());
+        bytes.extend(surface.pixels_mut().as_flattened());
+        std::fs::write(folder.join(format!("{name}.bgra")), bytes).unwrap();
+    }
+}

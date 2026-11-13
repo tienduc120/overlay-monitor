@@ -5,6 +5,7 @@
 
 pub mod account;
 pub mod clipboard;
+mod coverage;
 pub mod cpu;
 pub mod dialog;
 pub mod dpi;
