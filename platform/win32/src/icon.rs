@@ -1,10 +1,16 @@
-//! Icons made from the owner's `.ico` file, for the tray.
+//! Icons made from the owner's `.ico` file, for the tray, and the exe's own icon for its windows.
 
-use windows::Win32::UI::WindowsAndMessaging::{
-    CreateIconFromResourceEx, DestroyIcon, HICON, IDI_APPLICATION, LR_DEFAULTCOLOR, LoadIconW,
-};
+use std::ptr;
 
 use crate::Win32Error;
+use windows::Win32::Foundation::{HMODULE, HWND, LPARAM, WPARAM};
+use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+use windows::Win32::UI::HiDpi::{GetDpiForSystem, GetSystemMetricsForDpi};
+use windows::Win32::UI::WindowsAndMessaging::{
+    CreateIconFromResourceEx, DestroyIcon, HICON, ICON_BIG, ICON_SMALL, IDI_APPLICATION, IMAGE_ICON, LR_DEFAULTCOLOR,
+    LR_SHARED, LoadIconW, LoadImageW, SM_CXICON, SM_CXSMICON, SM_CYICON, SM_CYSMICON, SendMessageW, WM_SETICON,
+};
+use windows::core::PCWSTR;
 
 /// The version number `CreateIconFromResourceEx` wants for an icon image.
 const ICON_IMAGE_VERSION: u32 = 0x0003_0000;
@@ -96,6 +102,97 @@ impl Drop for Icon {
             // SAFETY: the handle was made by `from_ico`, is destroyed once, and the tray icon that used it is gone
             // by contract. A failed destroy leaks one icon until the process ends.
             unsafe { DestroyIcon(self.handle) }.ok();
+        }
+    }
+}
+
+/// The id of the icon group the build embeds in the exe (`app.rc`), which Task Manager and the shell show too.
+const EXE_ICON_ID: u16 = 1;
+
+/// The big and the small icon of a window, shared with the system: a shared image is cached per size and never freed
+/// by us, so these are plain handles that stay valid for the process's life.
+#[derive(Clone, Copy, Debug)]
+pub struct WindowIcons {
+    big: HICON,
+    small: HICON,
+}
+
+/// `(width, height)` of the big and the small window icon at `dpi`.
+pub(crate) fn icon_sizes(dpi: u32) -> ((i32, i32), (i32, i32)) {
+    // SAFETY: the call only reads system settings.
+    let metric = |index| unsafe { GetSystemMetricsForDpi(index, dpi) };
+    (
+        (metric(SM_CXICON), metric(SM_CYICON)),
+        (metric(SM_CXSMICON), metric(SM_CYSMICON)),
+    )
+}
+
+fn load_shared(module: HMODULE, id: u16, (width, height): (i32, i32)) -> Option<HICON> {
+    // `MAKEINTRESOURCE`: a resource id travels as a pointer value no larger than 16 bits.
+    let name = PCWSTR(ptr::without_provenance(usize::from(id)));
+    // SAFETY: `name` is an integer resource id, which the call accepts in place of a string; the module is loaded.
+    // A shared image is owned by the system, which is why `LR_SHARED` and no destroy go together.
+    let image = unsafe {
+        LoadImageW(
+            Some(module.into()),
+            name,
+            IMAGE_ICON,
+            width,
+            height,
+            LR_DEFAULTCOLOR | LR_SHARED,
+        )
+    }
+    .ok()?;
+    Some(HICON(image.0))
+}
+
+impl WindowIcons {
+    /// Loads icon group `id` of `module` at the two sizes `dpi` asks for; `None` when it has no such icon.
+    pub fn from_resource(module: HMODULE, id: u16, dpi: u32) -> Option<Self> {
+        let (big, small) = icon_sizes(dpi);
+        Some(Self {
+            big: load_shared(module, id, big)?,
+            small: load_shared(module, id, small)?,
+        })
+    }
+
+    /// The icon of this exe at `dpi`, or `None` when the exe has none (a test binary, say).
+    pub fn of_this_exe(dpi: u32) -> Option<Self> {
+        // SAFETY: no name asks for this executable's own module.
+        let module = unsafe { GetModuleHandleW(None) }.ok()?;
+        Self::from_resource(module, EXE_ICON_ID, dpi)
+    }
+
+    /// The exe's icon at the system's DPI, for a window class; absent, the system's default shows.
+    pub(crate) fn of_this_exe_for_class() -> Self {
+        // SAFETY: the call only reads a system setting.
+        Self::of_this_exe(unsafe { GetDpiForSystem() }).unwrap_or_else(|| Self {
+            big: HICON::default(),
+            small: HICON::default(),
+        })
+    }
+
+    pub(crate) fn big(&self) -> HICON {
+        self.big
+    }
+
+    pub(crate) fn small(&self) -> HICON {
+        self.small
+    }
+
+    /// Makes `window` show these icons in its title bar, the taskbar, and Alt+Tab.
+    pub fn apply(&self, window: HWND) {
+        for (kind, icon) in [(ICON_BIG, self.big), (ICON_SMALL, self.small)] {
+            // SAFETY: the window is alive; the icon is a shared handle that outlives it. The answer is the previous
+            // icon, which is not ours to free.
+            unsafe {
+                SendMessageW(
+                    window,
+                    WM_SETICON,
+                    Some(WPARAM(kind as usize)),
+                    Some(LPARAM(icon.0.expose_provenance().cast_signed())),
+                )
+            };
         }
     }
 }

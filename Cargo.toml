@@ -113,3 +113,10 @@ needless_pass_by_ref_mut = "deny"
 
 [workspace.lints.rustdoc]
 broken_intra_doc_links = "deny"
+
+# A smaller, faster exe: whole-program inlining across the workspace and the `windows` crate. The panic strategy stays
+# `unwind`, so a scoped thread's panic still reaches `join`.
+[profile.release]
+lto = "fat"
+codegen-units = 1
+strip = "symbols"

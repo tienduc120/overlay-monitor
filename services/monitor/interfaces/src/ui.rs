@@ -17,7 +17,7 @@ use platform_win32::ui::{Flow, MessageWindow, UiEvent};
 
 use crate::OverlayView;
 use crate::settings_editor::ShortcutSlot;
-use crate::settings_window::{PAWNIO_URL, SettingsWindow, WindowOutcome, keep_live_view_state};
+use crate::settings_window::{PAWNIO_URL, SettingsWindow, WindowOutcome, close_settings_window, keep_live_view_state};
 use crate::shortcuts::ShortcutTaken;
 use crate::shortcuts::{LOCK_HOTKEY, SHOW_HIDE_HOTKEY, Shortcuts};
 
@@ -422,6 +422,18 @@ impl Ui {
         }
     }
 
+    /// Closes the settings window, if one is open, and gives its memory back.
+    fn close_settings_window(&mut self) {
+        if let Some(open) = self.settings_window.take()
+            && let Err(error) = close_settings_window(open)
+        {
+            tracing::warn!(
+                ?error,
+                "the working set was not trimmed after the settings window closed"
+            );
+        }
+    }
+
     /// OK keeps and saves the edited settings; Cancel goes back to the ones the window opened with and saves nothing.
     /// Either closes the window first, so the save sees no window open.
     fn on_settings_event(&mut self, window: &MessageWindow, control: u16, change: DialogChange) {
@@ -433,7 +445,7 @@ impl Ui {
             WindowOutcome::Preview(edited) => self.follow(window, edited),
             WindowOutcome::Finished(edited) => self.finish_settings(window, &edited),
             WindowOutcome::Cancelled(original) => {
-                self.settings_window = None;
+                self.close_settings_window();
                 self.restore_shortcuts(window);
                 self.follow(window, original);
             }
@@ -467,7 +479,7 @@ impl Ui {
             }
             return;
         }
-        self.settings_window = None;
+        self.close_settings_window();
         if !shortcuts_changed {
             self.restore_shortcuts(window);
         }

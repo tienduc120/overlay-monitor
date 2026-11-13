@@ -1,10 +1,13 @@
 use std::time::Duration;
 
-use monitor_application::{OverlayFrame, OverlayStyle, Settings, overlay_style};
+use monitor_application::{OverlayFrame, OverlayStyle, PawnIoStatus, Settings, overlay_style};
 use platform_win32::dpi::enable_per_monitor_awareness;
+use platform_win32::memory::{is_module_loaded, process_memory};
 use platform_win32::overlay::OverlayWindow;
 use platform_win32::text::TextStyle;
-use platform_win32::ui::{EventSink, pump_messages_for};
+use platform_win32::ui::{EventSink, MessageWindow, pump_messages_for};
+
+use crate::settings_window::{SettingsWindow, close_settings_window};
 
 use super::{OverlayView, dpi_changed, needs_redraw, text_style};
 
@@ -132,4 +135,46 @@ fn the_view_shows_and_hides_its_window() {
 fn a_new_dpi_means_the_window_must_be_drawn_again_even_for_the_same_text() {
     assert!(dpi_changed(96, 144), "a move to a scaled monitor must force a redraw");
     assert!(!dpi_changed(96, 96));
+}
+
+#[expect(clippy::print_stdout, reason = "the measurement test reports to the terminal")]
+fn report(stage: &str) {
+    let m = process_memory().unwrap();
+    println!(
+        "{stage}: working set {} KB, private {} KB, d2d1 {} d3d11 {} D3D10Warp {} WindowsCodecs {}",
+        m.working_set / 1024,
+        m.private_bytes / 1024,
+        is_module_loaded("d2d1.dll"),
+        is_module_loaded("d3d11.dll"),
+        is_module_loaded("D3D10Warp.dll"),
+        is_module_loaded("WindowsCodecs.dll"),
+    );
+}
+
+/// The lean-runtime measurement: draws a frame in the default style, then opens and closes Settings, reporting this
+/// process's memory at each stage. Run with `--run-ignored only --no-capture`.
+#[test]
+#[ignore = "measures the running process"]
+fn reports_memory_after_a_frame_and_after_settings_closes() {
+    enable_per_monitor_awareness().unwrap();
+    let message = MessageWindow::create().unwrap();
+    let window = OverlayWindow::create(EventSink::discard()).unwrap();
+    window.show();
+    let mut view = OverlayView::new(window);
+    let frame = frame(&[
+        "FPS:   30 FPS",
+        "CPU:   2.0 %, 45.8 °C",
+        "GPU:   4.0 %, 56.0 °C",
+        "DDR5: 30.9 %, 35.5 °C",
+    ]);
+    view.show_frame(&frame, &default_style()).unwrap();
+    pump_messages_for(Duration::from_secs(1));
+    report("after a frame");
+
+    let settings = SettingsWindow::open(&message, &Settings::default(), &[], &PawnIoStatus::NotInstalled).unwrap();
+    pump_messages_for(Duration::from_secs(1));
+    report("settings open");
+    close_settings_window(settings).unwrap();
+    pump_messages_for(Duration::from_secs(1));
+    report("settings closed");
 }

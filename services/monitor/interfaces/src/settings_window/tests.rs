@@ -10,8 +10,8 @@ use platform_win32::ui::{MessageWindow, pump_messages_for};
 use crate::hotkey_keys;
 
 use super::{
-    PAWNIO_URL, SettingsWindow, WindowOutcome, font_family_list, keep_live_view_state, offers_install, seconds_text,
-    settings_template, size_text,
+    PAWNIO_URL, SettingsWindow, WindowOutcome, close_settings_window, font_family_list, keep_live_view_state,
+    offers_install, seconds_text, settings_template, size_text,
 };
 
 fn gpu_names() -> Vec<String> {
@@ -589,4 +589,12 @@ fn a_cancelled_colour_picker_changes_nothing_and_each_swatch_has_its_own_colour(
     };
     assert_eq!(settings.style.background_rgb, 0x00AB_CDEF);
     assert_eq!(settings.style.outline_rgb, 0, "the outline swatch was cancelled");
+}
+
+#[test]
+fn closing_the_window_frees_it_and_trims_the_working_set() {
+    let window = MessageWindow::create().unwrap();
+    let opened = open(&window);
+
+    close_settings_window(opened).unwrap();
 }

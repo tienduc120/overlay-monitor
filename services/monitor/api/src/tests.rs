@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use monitor_application::testing::{FakeGpuSensors, FakeSensor, FakeStartupTask};
 use monitor_application::{GpuPair, Line, ReadError, Sampler, Sensor, Sensors, Settings};
@@ -15,7 +15,7 @@ use platform_win32::etw::{start_session, stop_session};
 use monitor_application::StartupTask;
 
 use super::{
-    FrameTrace, SamplerControl, StopTrace, UnavailableStartup, build_sensors, count_frames_until_stopped,
+    FrameTrace, SamplerControl, StartupTrim, StopTrace, UnavailableStartup, build_sensors, count_frames_until_stopped,
     is_new_failure, modules_dir, refresh_startup_task, sample_until_stopped, startup_failure_text, wait_to_restart,
 };
 
@@ -412,4 +412,18 @@ fn a_trace_stopped_from_outside_is_started_again_and_the_exit_stops_the_new_one(
 fn pause(time: Duration) {
     let (_keep_open, never) = mpsc::channel::<()>();
     never.recv_timeout(time).ok();
+}
+
+#[test]
+fn the_start_up_trim_waits_for_its_delay_then_fires_once() {
+    let start = Instant::now();
+    let mut trim = StartupTrim::new(start, Duration::from_secs(5));
+
+    assert!(!trim.is_due(start));
+    assert!(!trim.is_due(start + Duration::from_millis(4_999)));
+    assert!(trim.is_due(start + Duration::from_secs(5)));
+    assert!(
+        !trim.is_due(start + Duration::from_secs(6)),
+        "a second trim never fires"
+    );
 }

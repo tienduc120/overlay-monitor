@@ -30,6 +30,7 @@ use platform_win32::gpu::{GpuAdapter, gpu_adapters};
 use platform_win32::icon::Icon;
 use platform_win32::instance::SingleInstance;
 use platform_win32::known_folder::{local_app_data, roaming_app_data};
+use platform_win32::memory::trim_working_set;
 use platform_win32::overlay::OverlayWindow;
 use platform_win32::shell::show_error;
 use platform_win32::tray::TrayIcon;
@@ -45,6 +46,8 @@ const TRACE_SESSION: &str = "OverlayMonitor";
 /// How long a stopped trace waits before it is started again.
 const RESTART_DELAY: Duration = Duration::from_secs(5);
 const TOOLTIP: &str = "Overlay Monitor";
+/// How long after start the one trim of the working set waits, so start-up allocations are done by then.
+const START_UP_TRIM_DELAY: Duration = Duration::from_secs(5);
 /// The owner's icon, in the file's several sizes.
 const OWNER_ICON: &[u8] = include_bytes!("../assets/icon.ico");
 const LOG_LIMIT_BYTES: u64 = 1024 * 1024;
@@ -346,7 +349,15 @@ fn show_overlay(
             let running = &running;
             scope.spawn(move || count_frames_until_stopped(first, TRACE_SESSION, counter, running, &stop));
         }
-        run_message_loop(&window, &mut |event| ui.handle(&window, event));
+        let mut start_up_trim = StartupTrim::new(Instant::now(), START_UP_TRIM_DELAY);
+        run_message_loop(&window, &mut |event| {
+            if start_up_trim.is_due(Instant::now()) {
+                trim_working_set()
+                    .inspect_err(|error| tracing::warn!(?error, "the working set was not trimmed"))
+                    .ok();
+            }
+            ui.handle(&window, event)
+        });
         // The scope joins both threads next: the UI holds the control sender, so dropping it lets the sampler end.
         // Stopping the running trace through its stopper ends the frame thread's consumer even when the system refuses
         // the stop, and keeps a session started meanwhile from running; the dropped sender ends a wait to restart.
@@ -359,6 +370,27 @@ fn show_overlay(
     // The tray icon, which `ui` held, went before the window the shell knows it by; the image it shows drops last.
     drop(window);
     Ok(())
+}
+
+/// The one trim of the working set that follows start-up: due once, at the first look at or after its deadline.
+struct StartupTrim {
+    deadline: Instant,
+    done: bool,
+}
+
+impl StartupTrim {
+    fn new(start: Instant, delay: Duration) -> Self {
+        Self {
+            deadline: start + delay,
+            done: false,
+        }
+    }
+
+    fn is_due(&mut self, now: Instant) -> bool {
+        let due = !self.done && now >= self.deadline;
+        self.done |= due;
+        due
+    }
 }
 
 /// The owner's icon at the tray's size, or the stock one when it cannot be made.
@@ -590,3 +622,7 @@ fn count_frames(consumer: TraceConsumer, counter: &FrameCounter) {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+#[path = "../version_info.rs"]
+mod version_info;

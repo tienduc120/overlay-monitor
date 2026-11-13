@@ -39,6 +39,7 @@ use windows::core::{PCWSTR, w};
 
 use crate::Win32Error;
 use crate::dpi::{dips_from_points, pixels_from_dips};
+use crate::icon::WindowIcons;
 use crate::placement::{MonitorPlacement, monitors, named_monitor, resolve_origin};
 use crate::snap::{Edges, Rect, keep_snapped, snap_while_moving, touching};
 use crate::text::{TextPainter, TextStyle};
@@ -452,10 +453,13 @@ fn dc_render_target(factory: &ID2D1Factory) -> Result<ID2D1DCRenderTarget, Win32
 fn register_class() -> Result<HINSTANCE, Win32Error> {
     // SAFETY: no name asks for this executable's own module.
     let instance: HINSTANCE = unsafe { GetModuleHandleW(None) }?.into();
+    let icons = WindowIcons::of_this_exe_for_class();
     let class = WNDCLASSEXW {
         cbSize: u32::try_from(size_of::<WNDCLASSEXW>()).unwrap_or(u32::MAX),
         lpfnWndProc: Some(window_procedure),
         hInstance: instance,
+        hIcon: icons.big(),
+        hIconSm: icons.small(),
         lpszClassName: CLASS,
         ..WNDCLASSEXW::default()
     };

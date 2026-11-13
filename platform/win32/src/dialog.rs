@@ -21,6 +21,7 @@ use windows::Win32::UI::Controls::{
     UDM_GETBUDDY, UDM_GETRANGE32, UDM_SETBUDDY, UDM_SETPOS32, UDM_SETRANGE32, UDS_ALIGNRIGHT, UDS_ARROWKEYS,
     UDS_NOTHOUSANDS, UDS_SETBUDDYINT,
 };
+use windows::Win32::UI::HiDpi::GetDpiForWindow;
 use windows::Win32::UI::Input::KeyboardAndMouse::{EnableWindow, IsWindowEnabled};
 use windows::Win32::UI::WindowsAndMessaging::{
     BM_GETCHECK, BM_SETCHECK, BN_CLICKED, BS_AUTOCHECKBOX, BS_DEFPUSHBUTTON, BS_GROUPBOX, BS_OWNERDRAW, BS_PUSHBUTTON,
@@ -36,6 +37,7 @@ use windows::core::PCWSTR;
 
 use crate::Win32Error;
 use crate::hotkey::HotkeyKeys;
+use crate::icon::WindowIcons;
 use crate::ui::{EventSink, MessageWindow, Queue, UiEvent};
 
 /// The id decorative items (labels, group boxes) carry, which Windows treats as "no control".
@@ -296,6 +298,10 @@ impl Dialog {
             custom_colours: Cell::new([COLORREF(0x00FF_FFFF); 16]),
         };
         dialog.queue.set_dialog(Some(window));
+        // SAFETY: the window is alive; an invalid one would give 0, and the icon then comes out at the default size.
+        if let Some(icons) = WindowIcons::of_this_exe(unsafe { GetDpiForWindow(window) }) {
+            icons.apply(window);
+        }
         for item in template.items.iter().filter(|item| item.kind == ItemKind::HotKey) {
             dialog.limit_hotkey_field(item.id);
         }

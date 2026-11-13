@@ -6,6 +6,7 @@ use std::time::Duration;
 use monitor_application::{Field, Line, PawnIoStatus, Settings, ShortcutKeys, StyleSettings};
 use platform_win32::Win32Error;
 use platform_win32::dialog::{DECORATIVE_ID, Dialog, DialogChange, DialogItem, DialogTemplate, ItemKind};
+use platform_win32::memory::trim_working_set;
 use platform_win32::text::installed_font_families;
 use platform_win32::ui::MessageWindow;
 
@@ -671,6 +672,16 @@ fn readings_items() -> Vec<DialogItem> {
         label("s", (LABEL_EDIT_LEFT + 14, interval + 2, 10, 8)),
     ]);
     items
+}
+
+/// Closes the window, which frees the family list, the brushes, and the dialog, then trims the working set once: the
+/// pages they held are idle by now, and no other point of the app's life frees this much at once.
+///
+/// # Errors
+/// The window is closed either way; the error is the system refusing to trim.
+pub(crate) fn close_settings_window(window: SettingsWindow) -> Result<(), Win32Error> {
+    drop(window);
+    trim_working_set()
 }
 
 #[cfg(test)]
