@@ -1,6 +1,6 @@
 //! A modeless dialog built from an in-memory template, the building block of the settings window. The template is
 //! plain data, encoded to the `DLGTEMPLATE` byte layout without touching Windows, and the dialog reports what the user
-//! did as [`UiEvent::Dialog`](crate::ui::UiEvent::Dialog).
+//! did as [`UiEvent::Dialog`].
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;

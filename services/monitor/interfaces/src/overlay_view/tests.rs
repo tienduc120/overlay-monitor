@@ -1,12 +1,16 @@
 use std::time::Duration;
 
-use monitor_application::{OverlayFrame, OverlayStyle, default_style};
+use monitor_application::{OverlayFrame, OverlayStyle, Settings, overlay_style};
 use platform_win32::dpi::enable_per_monitor_awareness;
 use platform_win32::overlay::OverlayWindow;
 use platform_win32::text::TextStyle;
 use platform_win32::ui::{EventSink, pump_messages_for};
 
 use super::{OverlayView, dpi_changed, needs_redraw, text_style};
+
+fn default_style() -> OverlayStyle {
+    overlay_style(&Settings::default())
+}
 
 #[test]
 fn the_text_style_carries_every_overlay_style_value() {

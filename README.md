@@ -22,7 +22,7 @@ Overlay Monitor runs on Windows 10 1809 or later, x64.
 - Without `--features elevated` the exe runs as the invoking user, which is the default for development and tests; the CPU and DDR5 temperatures then show "—".
 - Start with Windows: when the setting is on, the app creates a Task Scheduler task named "Overlay Monitor" (at sign-in, highest privileges, no time or battery limit) through `schtasks.exe`, and registers it again at each start so it follows the exe. It needs the elevated build, because creating a highest-privileges task needs administrator ([ADR-0020](docs/adr/0020-start-with-windows.md)).
 
-A value that is missing or unreadable shows "—". The tray icon shows or hides the overlay, and its menu exits the app. Drag the overlay anywhere; it snaps to monitor edges.
+A value that is missing or unreadable shows "—". The tray icon shows or hides the overlay, and its menu (also the overlay's right-click menu) holds Show overlay, Lock position, Settings…, Copy diagnostics, and Exit. Drag the overlay anywhere; it snaps to monitor edges, and its place is remembered.
 
 - Lock position (in the overlay's or the tray's menu) makes clicks pass through the overlay, so it cannot be dragged or right-clicked; unlock it from the tray menu or with Ctrl+Shift+L.
 - Ctrl+Shift+O shows or hides the overlay and Ctrl+Shift+L locks or unlocks it, from any program. If another program holds a combination, the app logs it and carries on without it; a saved lock is then dropped when Ctrl+Shift+L is the one that is taken.
@@ -50,6 +50,12 @@ Each line shows the values the settings turn on, in this order. A missing or sta
 | Memory | each stick | the same hubs, in address order | off |
 
 ## Settings
+
+**Settings…** in the tray or overlay menu opens a window with three groups.
+Changes show on the overlay at once, **OK** saves them, and **Cancel** or Esc puts everything back.
+- General: the two shortcuts, start with Windows, and the state of PawnIO with an **Install…** button that opens its page when the driver is missing or too old.
+- Style: the font, its size, bold and italic, the text, outline, and background colours, the outline width, and the background opacity.
+- Readings: for each line, whether it shows, its label, and which of its values show (the table above), plus the GPU adapter and how often the overlay updates.
 
 The app keeps its settings in `%APPDATA%\OverlayMonitor\settings.toml`, created on the first change. The app rewrites the file when a setting changes, so edit it while the app is closed. Every key is optional; a file that cannot be read is kept as `settings.toml.bad` and the defaults are used. The keys and the rules are in [ADR-0018](docs/adr/0018-the-settings-file.md).
 
