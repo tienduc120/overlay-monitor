@@ -105,6 +105,24 @@ fn ctrl_shift(key: u8) -> ShortcutKeys {
 }
 
 #[test]
+fn a_key_a_shortcut_cannot_use_is_named_as_the_problem() {
+    let mut e = editor();
+
+    for key in [0x20, 0x24, 0x60] {
+        // Space, Home, and numpad 0, which the field accepts.
+        assert_eq!(
+            e.set_shortcut(ShortcutSlot::ShowHide, ctrl_shift(key)),
+            Change::Invalid(Problem::UnsupportedKey),
+            "{key:#x}"
+        );
+    }
+    assert_eq!(
+        Problem::UnsupportedKey.to_string(),
+        "A shortcut is A\u{2013}Z, 0\u{2013}9, or F1\u{2013}F24 with Ctrl or Alt."
+    );
+}
+
+#[test]
 fn fixing_the_other_side_of_a_clash_lets_ok_finish() {
     let mut e = editor();
     assert_eq!(

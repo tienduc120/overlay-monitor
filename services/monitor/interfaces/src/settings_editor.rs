@@ -57,6 +57,7 @@ pub(crate) enum Problem {
     EmptyLabel,
     SameShortcut,
     NeedsCtrlOrAlt,
+    UnsupportedKey,
 }
 
 impl fmt::Display for Problem {
@@ -68,6 +69,7 @@ impl fmt::Display for Problem {
             Self::EmptyLabel => "Every label needs at least one character.",
             Self::SameShortcut => "Show/hide and lock/unlock need different shortcuts.",
             Self::NeedsCtrlOrAlt => "A shortcut needs Ctrl or Alt.",
+            Self::UnsupportedKey => "A shortcut is A\u{2013}Z, 0\u{2013}9, or F1\u{2013}F24 with Ctrl or Alt.",
         })
     }
 }
@@ -111,6 +113,17 @@ fn seconds(text: &str) -> Option<Duration> {
     (SHORTEST_SECS..=LONGEST_SECS)
         .contains(&secs)
         .then(|| Duration::from_secs_f64(secs))
+}
+
+/// Why keys that are not a usable shortcut are not: the key itself, or only a missing Ctrl or Alt. The key is one a
+/// shortcut may use exactly when holding Ctrl as well would make them usable.
+fn why_unusable(keys: ShortcutKeys) -> Problem {
+    let with_ctrl = ShortcutKeys { ctrl: true, ..keys };
+    if with_ctrl.is_valid() {
+        Problem::NeedsCtrlOrAlt
+    } else {
+        Problem::UnsupportedKey
+    }
 }
 
 /// Stores `value` when it differs, and says whether the overlay needs a redraw.
@@ -274,7 +287,7 @@ impl SettingsEditor {
         let keys = slot.keys_of(&self.typed);
         let other = slot.other().keys_of(&self.typed);
         let refusal = if !keys.is_valid() {
-            Some(Problem::NeedsCtrlOrAlt)
+            Some(why_unusable(keys))
         } else if keys == other {
             Some(Problem::SameShortcut)
         } else {

@@ -481,16 +481,35 @@ fn a_locked_overlay_starts_unlocked_when_its_shortcut_is_taken() {
 }
 
 #[test]
-fn three_missed_intervals_count_as_stalled() {
+fn three_missed_intervals_and_a_second_count_as_stalled() {
     let last = Instant::now();
-    let interval = Duration::from_secs(1);
+    let grace = Duration::from_secs(1);
 
-    assert!(!frames_stalled(last, last + interval * 3, interval));
-    assert!(frames_stalled(
-        last,
-        last + interval * 3 + Duration::from_millis(1),
-        interval
-    ));
+    for interval in [Duration::from_millis(250), Duration::from_secs(1)] {
+        let limit = interval * 3 + grace;
+        assert!(!frames_stalled(last, last + limit, interval), "{interval:?}");
+        assert!(
+            frames_stalled(last, last + limit + Duration::from_millis(1), interval),
+            "{interval:?}"
+        );
+    }
+}
+
+#[test]
+fn a_tick_after_a_long_wait_draws_the_frames_that_queued_not_dashes() {
+    let Rig {
+        window, mut ui, frames, ..
+    } = rig(Settings::default(), MemoryStore::empty());
+    // A menu or a picker held the thread: the last frame taken is old, and newer ones wait in the channel.
+    ui.last_frame = Instant::now().checked_sub(Duration::from_secs(10)).unwrap();
+    let queued = OverlayFrame {
+        lines: vec![String::from("FPS:   60 FPS")],
+    };
+    frames.send(queued.clone()).unwrap();
+
+    ui.handle(&window, UiEvent::Tick);
+
+    assert_eq!(ui.latest, Some(queued));
 }
 
 #[test]

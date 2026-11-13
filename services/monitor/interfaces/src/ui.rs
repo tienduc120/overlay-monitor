@@ -28,6 +28,8 @@ const SETTINGS: u16 = 4;
 const COPY_DIAGNOSTICS: u16 = 5;
 /// A sampler busy in a slow read still answers within this; a longer wait would freeze the menu.
 const REPORT_WAIT: Duration = Duration::from_secs(2);
+/// One healthy sample may wait 500 ms for each of two hardware locks, longer than three intervals of 0.25 s.
+const STALL_GRACE: Duration = Duration::from_secs(1);
 
 /// Whether the overlay is shown and whether it is locked in place, the facts the events and commands depend on.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -154,9 +156,10 @@ pub fn restore_focus_after(command: Option<u16>) -> bool {
     command != Some(SETTINGS)
 }
 
-/// Whether more than three update intervals passed since the last frame, so the numbers on screen are old.
+/// Whether more than three update intervals and `STALL_GRACE` passed since the last frame, so the numbers on screen
+/// are old.
 pub(crate) fn frames_stalled(last_frame: Instant, now: Instant, interval: Duration) -> bool {
-    now.saturating_duration_since(last_frame) > interval.saturating_mul(3)
+    now.saturating_duration_since(last_frame) > interval.saturating_mul(3).saturating_add(STALL_GRACE)
 }
 
 /// Remembers the last failure of one kind of operation, so a failure that repeats every frame is logged once.
@@ -531,6 +534,8 @@ impl Ui {
     /// A sampler that stopped delivering must not leave old numbers looking current. The dashes stay as the latest
     /// frame until a real one arrives, so a redraw (lock, show) keeps them.
     fn check_stalled(&mut self) {
+        // After a menu, a picker, or the diagnostics wait, frames may be queued that no wake has taken yet.
+        self.take_frames();
         if !frames_stalled(self.last_frame, Instant::now(), self.settings.update_interval) {
             return;
         }
