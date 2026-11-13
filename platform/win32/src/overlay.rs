@@ -27,10 +27,11 @@ use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::HiDpi::GetDpiForWindow;
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, GWLP_USERDATA, GetWindowLongPtrW, HTCAPTION, HWND_TOPMOST,
-    IsWindowVisible, MA_NOACTIVATE, RegisterClassExW, SW_HIDE, SW_SHOWNOACTIVATE, SWP_NOACTIVATE, SWP_NOMOVE,
-    SWP_NOSIZE, SWP_NOZORDER, SetWindowLongPtrW, SetWindowPos, ShowWindow, ULW_ALPHA, USER_DEFAULT_SCREEN_DPI,
-    UpdateLayeredWindow, WM_DPICHANGED, WM_MOUSEACTIVATE, WM_NCHITTEST, WM_NCRBUTTONDOWN, WM_NCRBUTTONUP, WNDCLASSEXW,
-    WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
+    IsWindowVisible, MA_NOACTIVATE, PostQuitMessage, RegisterClassExW, SW_HIDE, SW_SHOWNOACTIVATE, SWP_NOACTIVATE,
+    SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SetWindowLongPtrW, SetWindowPos, ShowWindow, ULW_ALPHA,
+    USER_DEFAULT_SCREEN_DPI, UpdateLayeredWindow, WM_CLOSE, WM_DPICHANGED, WM_MOUSEACTIVATE, WM_NCHITTEST,
+    WM_NCRBUTTONDOWN, WM_NCRBUTTONUP, WNDCLASSEXW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
+    WS_POPUP,
 };
 use windows::core::{PCWSTR, w};
 
@@ -159,6 +160,11 @@ impl OverlayWindow {
             )
         }
         .ok();
+    }
+
+    /// The DPI of the monitor the window is on now, which changes when it is dragged to another one.
+    pub fn dpi(&self) -> u32 {
+        window_dpi(self.window)
     }
 
     pub fn is_visible(&self) -> bool {
@@ -459,6 +465,12 @@ unsafe extern "system" fn window_procedure(window: HWND, message: u32, wparam: W
         // Answered here, so the default handling of a right-click on a caption (the window menu) never starts and the
         // button-up still arrives.
         WM_NCRBUTTONDOWN => LRESULT(0),
+        WM_CLOSE => {
+            // Ends the loop in order instead of destroying the window under the process.
+            // SAFETY: posts WM_QUIT to this thread, which owns the window.
+            unsafe { PostQuitMessage(0) };
+            LRESULT(0)
+        }
         WM_NCRBUTTONUP => {
             // SAFETY: called from this class's window procedure.
             if let Some(shared) = unsafe { shared(window) } {
@@ -497,7 +509,8 @@ fn on_dpi_changed(window: HWND, shared: Option<&Shared>, suggested: &RECT, dpi: 
         )
     }
     .ok();
-    // A failed redraw keeps the old drawing until the next frame, which reads the DPI afresh. So does a canvas in use:
+    // A failed redraw keeps the old drawing until the view draws again; it does so at once, as it sees the DPI differ
+    // from the one it last drew at. So does a canvas in use:
     // the message then came from inside a draw, whose own resize put the window on another monitor.
     if let Some(shared) = shared
         && let Ok(mut canvas) = shared.canvas.try_borrow_mut()

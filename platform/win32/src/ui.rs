@@ -12,10 +12,10 @@ use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::Threading::INFINITE;
 use windows::Win32::UI::Shell::NIN_SELECT;
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GWLP_USERDATA, GetMessageW, GetWindowLongPtrW,
-    MSG, MsgWaitForMultipleObjects, PM_REMOVE, PeekMessageW, PostMessageW, QS_ALLINPUT, RegisterClassExW,
-    RegisterWindowMessageW, SetWindowLongPtrW, TranslateMessage, WM_APP, WM_CONTEXTMENU, WNDCLASSEXW, WS_EX_TOOLWINDOW,
-    WS_OVERLAPPED,
+    ChangeWindowMessageFilterEx, CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GWLP_USERDATA,
+    GetMessageW, GetWindowLongPtrW, MSG, MSGFLT_ALLOW, MsgWaitForMultipleObjects, PM_REMOVE, PeekMessageW,
+    PostMessageW, PostQuitMessage, QS_ALLINPUT, RegisterClassExW, RegisterWindowMessageW, SetWindowLongPtrW,
+    TranslateMessage, WM_APP, WM_CLOSE, WM_CONTEXTMENU, WNDCLASSEXW, WS_EX_TOOLWINDOW, WS_OVERLAPPED,
 };
 use windows::core::{PCWSTR, w};
 
@@ -109,6 +109,13 @@ impl MessageWindow {
                 None,
             )
         }?;
+        let allowed =
+            allow_message(window, taskbar_created_message()).and_then(|()| allow_message(window, TRAY_CALLBACK));
+        if let Err(error) = allowed {
+            // SAFETY: the window was just created here and is destroyed once.
+            unsafe { DestroyWindow(window) }.ok();
+            return Err(error);
+        }
         let queue = Rc::new(Queue {
             events: RefCell::new(VecDeque::new()),
             taskbar_created: taskbar_created_message(),
@@ -205,6 +212,18 @@ pub(crate) fn tray_event(wparam: WPARAM, lparam: LPARAM) -> Option<UiEvent> {
     }
 }
 
+/// Lets a message through to the window even when its sender runs at a lower integrity level: Explorer's taskbar
+/// broadcast and the tray callbacks would otherwise never reach an elevated window.
+fn allow_message(window: HWND, message: u32) -> Result<(), Win32Error> {
+    // SAFETY: no previous-state output is asked for; a missing window only makes the call fail.
+    unsafe { ChangeWindowMessageFilterEx(window, message, MSGFLT_ALLOW, None) }
+}
+
+/// A failed registration gives 0, which is `WM_NULL`, so 0 never matches.
+fn is_taskbar_created(message: u32, registered: u32) -> bool {
+    registered != 0 && message == registered
+}
+
 fn register_class() -> Result<HINSTANCE, Win32Error> {
     // SAFETY: no name asks for this executable's own module.
     let instance: HINSTANCE = unsafe { GetModuleHandleW(None) }?.into();
@@ -231,6 +250,13 @@ fn register_class() -> Result<HINSTANCE, Win32Error> {
 /// # Safety
 /// Only Windows calls this, with the arguments of a message for a window of this class.
 unsafe extern "system" fn window_procedure(window: HWND, message: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+    if message == WM_CLOSE {
+        // A close request (taskkill without /F, a session end) ends the loop in order, rather than destroying the
+        // window and leaving a process nobody can reach.
+        // SAFETY: posts WM_QUIT to this thread, which owns the window.
+        unsafe { PostQuitMessage(0) };
+        return LRESULT(0);
+    }
     // SAFETY: reading a window's user data has no preconditions.
     let data = unsafe { GetWindowLongPtrW(window, GWLP_USERDATA) };
     let state = ptr::with_exposed_provenance::<Queue>(data.cast_unsigned());
@@ -240,7 +266,7 @@ unsafe extern "system" fn window_procedure(window: HWND, message: u32, wparam: W
         let event = match message {
             TRAY_CALLBACK => tray_event(wparam, lparam),
             WAKE => Some(UiEvent::Wake),
-            other if other == queue.taskbar_created => Some(UiEvent::TaskbarRestarted),
+            other if is_taskbar_created(other, queue.taskbar_created) => Some(UiEvent::TaskbarRestarted),
             _ => None,
         };
         if let Some(event) = event {

@@ -1,6 +1,6 @@
 //! One running copy per session, held by a named mutex.
 
-use windows::Win32::Foundation::{CloseHandle, ERROR_ALREADY_EXISTS, GetLastError, HANDLE};
+use windows::Win32::Foundation::{CloseHandle, ERROR_ACCESS_DENIED, ERROR_ALREADY_EXISTS, GetLastError, HANDLE};
 use windows::Win32::System::Threading::CreateMutexW;
 use windows::core::PCWSTR;
 
@@ -8,8 +8,14 @@ use crate::Win32Error;
 
 /// Holds the name until dropped, so a second copy finds it taken.
 #[derive(Debug)]
+#[must_use = "the name is released as soon as this is dropped"]
 pub struct SingleInstance {
     handle: HANDLE,
+}
+
+/// An elevated copy holds the name with a security descriptor that keeps a non-elevated copy from opening it.
+fn held_elsewhere(code: windows::core::HRESULT) -> bool {
+    code == ERROR_ACCESS_DENIED.to_hresult()
 }
 
 impl SingleInstance {
@@ -21,7 +27,11 @@ impl SingleInstance {
         let wide: Vec<u16> = name.encode_utf16().chain(Some(0)).collect();
         // SAFETY: `wide` is NUL-terminated and outlives the call; no security attributes are passed, and the mutex is
         // not taken, only named.
-        let handle = unsafe { CreateMutexW(None, false, PCWSTR(wide.as_ptr())) }?;
+        let handle = match unsafe { CreateMutexW(None, false, PCWSTR(wide.as_ptr())) } {
+            Ok(handle) => handle,
+            Err(error) if held_elsewhere(error.code()) => return Ok(None),
+            Err(error) => return Err(error),
+        };
         // CreateMutexW succeeds for a name that exists and says so only here, so read it before anything else can
         // overwrite it.
         // SAFETY: reading the thread's last error has no preconditions.

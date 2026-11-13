@@ -1,6 +1,13 @@
-use platform_win32::ui::UiEvent;
+use std::sync::mpsc::{TryRecvError, channel};
 
-use super::{Action, UiState, menu_items};
+use monitor_application::{OverlayFrame, default_style};
+use platform_win32::overlay::OverlayWindow;
+use platform_win32::tray::TrayIcon;
+use platform_win32::ui::{Flow, MessageWindow, UiEvent};
+
+use crate::OverlayView;
+
+use super::{Action, ErrorLog, Ui, UiState, menu_items};
 
 #[test]
 fn a_tray_click_toggles_the_overlay() {
@@ -71,4 +78,53 @@ fn the_menu_command_for_the_overlay_hides_it_while_visible() {
     let mut s = UiState { visible: true };
     assert_eq!(s.on_command(1), vec![Action::HideOverlay]);
     assert!(!s.visible, "the state must follow the overlay");
+}
+
+#[test]
+fn a_failure_that_repeats_is_logged_once() {
+    let mut log = ErrorLog::default();
+
+    let seen = [Some(5), Some(5), Some(5)].map(|failure| log.is_new(failure));
+
+    assert_eq!(seen, [true, false, false]);
+}
+
+#[test]
+fn a_different_failure_is_new_and_so_is_one_after_a_success() {
+    let mut log = ErrorLog::default();
+
+    let seen = [Some(5), Some(6), None, Some(6)].map(|failure| log.is_new(failure));
+
+    assert_eq!(seen, [true, true, false, true]);
+}
+
+#[test]
+fn frames_that_arrive_while_the_overlay_is_hidden_are_kept_only_as_the_newest() {
+    let window = MessageWindow::create().unwrap();
+    let overlay = OverlayWindow::create(window.sink()).unwrap();
+    let tray = TrayIcon::add(&window, "Overlay Monitor test").unwrap();
+    let (frames, received) = channel();
+    let mut ui = Ui::new(OverlayView::new(overlay), tray, received, default_style());
+    for n in 0..5 {
+        frames
+            .send(OverlayFrame {
+                lines: vec![format!("FPS: {n}")],
+            })
+            .unwrap();
+    }
+
+    let flow = ui.handle(&window, UiEvent::Wake);
+
+    assert_eq!(flow, Flow::Continue);
+    assert_eq!(
+        ui.frames.try_recv(),
+        Err(TryRecvError::Empty),
+        "a hidden overlay must not let frames pile up"
+    );
+    assert_eq!(
+        ui.latest,
+        Some(OverlayFrame {
+            lines: vec![String::from("FPS: 4")]
+        })
+    );
 }

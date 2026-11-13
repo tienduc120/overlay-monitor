@@ -6,7 +6,7 @@ use platform_win32::overlay::OverlayWindow;
 use platform_win32::text::TextStyle;
 use platform_win32::ui::{EventSink, pump_messages_for};
 
-use super::{OverlayView, needs_redraw, text_style};
+use super::{OverlayView, dpi_changed, needs_redraw, text_style};
 
 #[test]
 fn the_text_style_carries_every_overlay_style_value() {
@@ -122,4 +122,10 @@ fn the_view_shows_and_hides_its_window() {
     let hidden = !view.is_visible();
 
     assert!(shown && hidden, "shown: {shown}, hidden afterwards: {hidden}");
+}
+
+#[test]
+fn a_new_dpi_means_the_window_must_be_drawn_again_even_for_the_same_text() {
+    assert!(dpi_changed(96, 144), "a move to a scaled monitor must force a redraw");
+    assert!(!dpi_changed(96, 96));
 }

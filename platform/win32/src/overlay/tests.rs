@@ -4,9 +4,10 @@ use std::time::Duration;
 
 use windows::Win32::Foundation::{DWRITE_E_NOFONT, LPARAM, LRESULT, RECT, WPARAM};
 use windows::Win32::UI::WindowsAndMessaging::{
-    GWL_EXSTYLE, GetWindowLongPtrW, GetWindowRect, HTCAPTION, HWND_NOTOPMOST, MA_NOACTIVATE, PostMessageW,
-    SPI_GETWORKAREA, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS, SendMessageW,
-    SetWindowPos, SystemParametersInfoW, WM_MOUSEACTIVATE, WM_NCHITTEST, WM_NCRBUTTONUP, WS_EX_TOPMOST,
+    GWL_EXSTYLE, GetWindowLongPtrW, GetWindowRect, HTCAPTION, HWND_NOTOPMOST, IsWindow, MA_NOACTIVATE, MSG, PM_REMOVE,
+    PeekMessageW, PostMessageW, SPI_GETWORKAREA, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
+    SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS, SendMessageW, SetWindowPos, SystemParametersInfoW, WM_CLOSE, WM_MOUSEACTIVATE,
+    WM_NCHITTEST, WM_NCRBUTTONUP, WM_QUIT, WS_EX_TOPMOST,
 };
 
 use super::{OverlayWindow, premultiplied_bgra, screen_point, window_size};
@@ -245,4 +246,19 @@ fn is_topmost(window: &OverlayWindow) -> bool {
     // SAFETY: reading the window's extended style has no preconditions.
     let style = unsafe { GetWindowLongPtrW(window.window, GWL_EXSTYLE) };
     style.cast_unsigned() & WS_EX_TOPMOST.0 as usize != 0
+}
+
+#[test]
+fn closing_the_overlay_asks_the_loop_to_end_instead_of_destroying_it() {
+    let window = OverlayWindow::create(EventSink::discard()).unwrap();
+
+    send(&window, WM_CLOSE, WPARAM(0), LPARAM(0));
+
+    // SAFETY: querying any handle is allowed.
+    let alive = unsafe { IsWindow(Some(window.window)) }.as_bool();
+    assert!(alive, "the window must outlive a close request");
+    let mut message = MSG::default();
+    // SAFETY: `message` is a live local; only WM_QUIT is asked for, and it is removed so nothing else sees it.
+    let quit = unsafe { PeekMessageW(&raw mut message, None, WM_QUIT, WM_QUIT, PM_REMOVE) };
+    assert!(quit.as_bool(), "a close request must post WM_QUIT");
 }

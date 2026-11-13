@@ -8,11 +8,18 @@ pub struct OverlayView {
     window: OverlayWindow,
     /// What the window shows now, so an unchanged frame is not drawn again.
     last: Option<(Vec<String>, OverlayStyle)>,
+    /// The DPI of the monitor `last` was drawn on.
+    drawn_dpi: u32,
 }
 
 impl OverlayView {
     pub fn new(window: OverlayWindow) -> Self {
-        Self { window, last: None }
+        let drawn_dpi = window.dpi();
+        Self {
+            window,
+            last: None,
+            drawn_dpi,
+        }
     }
 
     pub fn show(&self) {
@@ -33,6 +40,11 @@ impl OverlayView {
     /// # Errors
     /// The style's font is not installed, or drawing failed.
     pub fn show_frame(&mut self, frame: &OverlayFrame, style: &OverlayStyle) -> Result<(), Win32Error> {
+        let dpi = self.window.dpi();
+        if dpi_changed(self.drawn_dpi, dpi) {
+            // The window's own redraw for the new scale may have failed, so draw whatever comes next in full.
+            self.last = None;
+        }
         let last = self.last.as_ref().map(|(lines, style)| (lines.as_slice(), style));
         if !needs_redraw(last, frame, style) {
             self.window.keep_on_top();
@@ -41,6 +53,7 @@ impl OverlayView {
         self.window.draw(&frame.lines, &text_style(style))?;
         // Only a drawn frame counts as shown, so a failed draw is tried again.
         self.last = Some((frame.lines.clone(), style.clone()));
+        self.drawn_dpi = dpi;
         Ok(())
     }
 }
@@ -63,6 +76,11 @@ pub fn text_style(style: &OverlayStyle) -> TextStyle {
         background_rgb: style.background_rgb,
         background_alpha: style.background_alpha,
     }
+}
+
+/// Whether the window moved to a monitor with another scale since `drawn`, which its own redraw may have failed.
+fn dpi_changed(drawn: u32, now: u32) -> bool {
+    drawn != now
 }
 
 #[cfg(test)]

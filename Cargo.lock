@@ -558,6 +558,7 @@ version = "0.1.0"
 dependencies = [
  "monitor-application",
  "platform-win32",
+ "tracing",
 ]
 
 [[package]]

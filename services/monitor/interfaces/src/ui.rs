@@ -75,6 +75,22 @@ pub fn menu_items(visible: bool) -> Vec<MenuItem> {
     ]
 }
 
+/// Remembers the last failure of one kind of operation, so a failure that repeats every frame is logged once.
+#[derive(Debug, Default)]
+struct ErrorLog {
+    last: Option<i32>,
+}
+
+impl ErrorLog {
+    /// Whether this outcome is worth a log line: `failure` is the error code, or `None` for success. A different
+    /// code is news, the same one again is not, and a success makes the next failure news again.
+    fn is_new(&mut self, failure: Option<i32>) -> bool {
+        let news = failure.is_some() && failure != self.last;
+        self.last = failure;
+        news
+    }
+}
+
 /// The UI thread's state: the overlay, the tray icon, and the sampler's frames.
 pub struct Ui {
     state: UiState,
@@ -85,6 +101,8 @@ pub struct Ui {
     style: OverlayStyle,
     /// The newest frame received, drawn again when the overlay is shown or the style changes.
     latest: Option<OverlayFrame>,
+    draw_errors: ErrorLog,
+    tray_errors: ErrorLog,
 }
 
 impl Ui {
@@ -98,10 +116,16 @@ impl Ui {
             frames,
             style,
             latest: None,
+            draw_errors: ErrorLog::default(),
+            tray_errors: ErrorLog::default(),
         }
     }
 
     pub fn handle(&mut self, window: &MessageWindow, event: UiEvent) -> Flow {
+        // Whether or not the overlay is shown, so frames sent while it is hidden do not pile up.
+        if event == UiEvent::Wake {
+            self.take_frames();
+        }
         let actions = self.state.on_event(event);
         self.apply(window, actions)
     }
@@ -120,8 +144,7 @@ impl Ui {
             Action::ShowOverlay => self.view.show(),
             Action::HideOverlay => self.view.hide(),
             Action::DrawLatest => self.draw_latest(),
-            // The icon may still be there, or the shell may not be ready; the next restart notice tries again.
-            Action::ReaddTrayIcon => drop(self.tray.readd()),
+            Action::ReaddTrayIcon => self.readd_tray_icon(),
             Action::ShowMenu { x, y } => return self.choose_from_menu(window, x, y),
             Action::Exit => return Flow::Exit,
         }
@@ -140,13 +163,28 @@ impl Ui {
         }
     }
 
-    fn draw_latest(&mut self) {
+    fn readd_tray_icon(&mut self) {
+        // The icon may still be there, or the shell not ready yet; the next restart notice tries again.
+        let failure = self.tray.readd().err();
+        if self.tray_errors.is_new(failure.as_ref().map(|e| e.code().0)) {
+            tracing::warn!(error = ?failure, "the tray icon could not be added again");
+        }
+    }
+
+    /// Moves what the sampler sent into `latest`, keeping only the newest so the channel never grows.
+    fn take_frames(&mut self) {
         if let Some(newest) = self.frames.try_iter().last() {
             self.latest = Some(newest);
         }
-        if let Some(frame) = &self.latest {
-            // A missing font or a failed present keeps the old picture; the next frame tries again.
-            drop(self.view.show_frame(frame, &self.style));
+    }
+
+    fn draw_latest(&mut self) {
+        self.take_frames();
+        let Some(frame) = &self.latest else { return };
+        // A missing font or a failed present keeps the old picture; the next frame tries again.
+        let failure = self.view.show_frame(frame, &self.style).err();
+        if self.draw_errors.is_new(failure.as_ref().map(|e| e.code().0)) {
+            tracing::warn!(error = ?failure, "the overlay could not draw its frame");
         }
     }
 }
