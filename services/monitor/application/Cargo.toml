@@ -9,6 +9,7 @@ publish.workspace = true
 
 [dependencies]
 monitor-domain = { path = "../domain" }
+jiff = { workspace = true }
 platform-clock = { workspace = true }
 thiserror = { workspace = true, features = ["std"] }
 tracing = { workspace = true }

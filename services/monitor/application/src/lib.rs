@@ -3,10 +3,15 @@
 
 mod ports;
 mod sample;
+mod settings;
 mod style;
 #[cfg(any(test, feature = "test-support"))]
 pub mod testing;
 
-pub use ports::{ReadError, Sensor, Sensors};
+pub use ports::{ReadError, Sensor, Sensors, SettingsStore};
 pub use sample::{OverlayFrame, Sampler};
+pub use settings::{
+    Field, InvalidShortcut, Line, LineSettings, LoadSettingsError, OverlayPosition, SaveSettingsError, Settings,
+    ShortcutKeys, StyleSettings, line_fields, load_settings, overlay_style,
+};
 pub use style::{OverlayStyle, default_style};

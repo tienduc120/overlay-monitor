@@ -24,3 +24,14 @@ pub struct Sensors {
     pub memory_load: Box<dyn Sensor>,
     pub memory_temp: Box<dyn Sensor>,
 }
+
+/// Where the settings live between runs. `Ok(None)` means there is no file yet.
+pub trait SettingsStore {
+    /// # Errors
+    /// `Unreadable` when the file exists but cannot be used, `Io` when it cannot be read.
+    fn load(&self) -> Result<Option<crate::Settings>, crate::LoadSettingsError>;
+
+    /// # Errors
+    /// `SaveSettingsError` when the settings could not be written.
+    fn save(&self, settings: &crate::Settings) -> Result<(), crate::SaveSettingsError>;
+}

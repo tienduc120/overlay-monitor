@@ -3,7 +3,8 @@ use std::time::Duration;
 use monitor_domain::{Layout, Sample, Snapshot};
 use platform_clock::{Clock, Timestamp};
 
-use crate::{ReadError, Sensor, Sensors};
+use crate::settings::layout_of;
+use crate::{ReadError, Sensor, Sensors, Settings};
 
 /// The text lines to draw for one round of readings.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -24,7 +25,7 @@ impl<C: Clock> Sampler<C> {
         Self {
             sensors,
             clock,
-            layout: Layout::default(),
+            layout: layout_of(&Settings::default()),
             snapshot: Snapshot::default(),
         }
     }

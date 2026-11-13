@@ -1,8 +1,10 @@
 //! Hand-written fakes of this crate's ports, for other layers' tests (feature `test-support`).
 
+use std::cell::RefCell;
 use std::collections::VecDeque;
+use std::rc::Rc;
 
-use crate::{ReadError, Sensor};
+use crate::{LoadSettingsError, ReadError, SaveSettingsError, Sensor, Settings, SettingsStore};
 
 /// Answers in order, then keeps repeating the last answer.
 #[derive(Debug)]
@@ -43,5 +45,77 @@ impl Sensor for FakeSensor {
             || Err(ReadError::Unavailable(String::from("no answer programmed"))),
             repeat,
         )
+    }
+}
+
+#[derive(Debug, Default)]
+struct Record {
+    held: Option<Settings>,
+    unreadable: bool,
+    failing_saves: bool,
+    saved: Vec<Settings>,
+}
+
+/// A settings store in memory. A clone shares the one record, so a test keeps a handle after moving a clone away
+/// (UI thread only).
+#[derive(Clone, Debug, Default)]
+pub struct MemoryStore(Rc<RefCell<Record>>);
+
+impl MemoryStore {
+    fn with(record: Record) -> Self {
+        Self(Rc::new(RefCell::new(record)))
+    }
+
+    pub fn empty() -> Self {
+        Self::default()
+    }
+
+    pub fn holding(settings: Settings) -> Self {
+        Self::with(Record {
+            held: Some(settings),
+            ..Record::default()
+        })
+    }
+
+    pub fn unreadable() -> Self {
+        Self::with(Record {
+            unreadable: true,
+            ..Record::default()
+        })
+    }
+
+    pub fn failing_saves() -> Self {
+        Self::with(Record {
+            failing_saves: true,
+            ..Record::default()
+        })
+    }
+
+    /// Every save, in order.
+    pub fn saved(&self) -> Vec<Settings> {
+        self.0.borrow().saved.clone()
+    }
+}
+
+impl SettingsStore for MemoryStore {
+    fn load(&self) -> Result<Option<Settings>, LoadSettingsError> {
+        let record = self.0.borrow();
+        if record.unreadable {
+            return Err(LoadSettingsError::Unreadable {
+                kept_as: String::from("settings.toml.bad"),
+                source: "not a settings file".into(),
+            });
+        }
+        Ok(record.held.clone())
+    }
+
+    fn save(&self, settings: &Settings) -> Result<(), SaveSettingsError> {
+        let mut record = self.0.borrow_mut();
+        if record.failing_saves {
+            return Err(SaveSettingsError("the disk is full".into()));
+        }
+        record.saved.push(settings.clone());
+        record.held = Some(settings.clone());
+        Ok(())
     }
 }

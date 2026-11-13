@@ -309,6 +309,7 @@ dependencies = [
 name = "monitor-application"
 version = "0.1.0"
 dependencies = [
+ "jiff",
  "monitor-domain",
  "platform-clock",
  "thiserror",
