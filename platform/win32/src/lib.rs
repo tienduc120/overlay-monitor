@@ -10,6 +10,7 @@ pub mod foreground;
 pub mod gpu;
 pub mod icon;
 pub mod instance;
+pub mod known_folder;
 pub mod memory;
 pub mod menu;
 pub mod mutex;

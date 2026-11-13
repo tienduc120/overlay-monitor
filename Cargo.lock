@@ -329,8 +329,12 @@ name = "monitor-infrastructure"
 version = "0.1.0"
 dependencies = [
  "monitor-application",
+ "monitor-domain",
  "platform-win32",
+ "serde",
  "thiserror",
+ "toml",
+ "tracing",
 ]
 
 [[package]]

@@ -6,6 +6,7 @@ mod gpu;
 mod memory_load;
 mod pawn_support;
 mod ryzen;
+mod settings_file;
 mod spd5118;
 mod unavailable;
 
@@ -14,5 +15,6 @@ pub use frame_rate::{FrameCounter, FrameRate, PRESENT_PROVIDERS, frames_per_seco
 pub use gpu::{GpuLoad, GpuTemperature, engine_load_percent, pick_adapter};
 pub use memory_load::MemoryLoad;
 pub use ryzen::RyzenTemperature;
+pub use settings_file::{TomlSettingsStore, settings_path};
 pub use spd5118::Ddr5Temperature;
 pub use unavailable::{UnavailableSensor, or_unavailable};

@@ -23,6 +23,7 @@ windows = "0.62.2"
 jiff = { version = "0.2.43", default-features = false }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
+toml = "1.2.1"
 thiserror = { version = "2.0.21", default-features = false }
 tracing = { version = "0.1.44", default-features = false, features = ["std", "attributes"] }
 tracing-subscriber = { version = "0.3.23", default-features = false, features = ["std", "fmt", "json", "env-filter"] }
@@ -33,7 +34,6 @@ cargo_metadata = "0.23.1"
 clap = { version = "4.6.7", features = ["derive"] }
 proc-macro2 = { version = "1.0.107", features = ["span-locations"] }
 syn = { version = "2.0.119", features = ["full", "visit", "extra-traits"] }
-toml = "1.2.1"
 toml_edit = "0.25.19"
 walkdir = "2.5.0"
 

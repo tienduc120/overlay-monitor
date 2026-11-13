@@ -19,6 +19,10 @@ Overlay Monitor runs on Windows 10 1809 or later, x64.
 
 A value that is missing or unreadable shows "—". The tray icon shows or hides the overlay, and its menu exits the app. Drag the overlay anywhere; it snaps to monitor edges.
 
+## Settings
+
+The app keeps its settings in `%APPDATA%\OverlayMonitor\settings.toml`, created on the first change. The app rewrites the file when a setting changes, so edit it while the app is closed. Every key is optional; a file that cannot be read is kept as `settings.toml.bad` and the defaults are used. The keys and the rules are in [ADR-0018](docs/adr/0018-the-settings-file.md).
+
 ## Quick start
 
 You need rustup (it reads `rust-toolchain.toml`), Git, and on Windows the Visual Studio Build Tools with the C++ workload.
@@ -54,7 +58,7 @@ This base stands on public work. Material that is copied or adapted is listed in
 **Used**
 
 - The Rust project: the language, cargo, rustfmt, clippy, and rustdoc.
-- Crates we depend on: [serde](https://github.com/serde-rs/serde), [thiserror](https://github.com/dtolnay/thiserror), [anyhow](https://github.com/dtolnay/anyhow), [tracing](https://github.com/tokio-rs/tracing), [jiff](https://github.com/BurntSushi/jiff), [clap](https://github.com/clap-rs/clap), [syn](https://github.com/dtolnay/syn), [cargo_metadata](https://github.com/oli-obk/cargo_metadata), [toml and toml_edit](https://github.com/toml-rs/toml), [walkdir](https://github.com/BurntSushi/walkdir), [serde_json](https://github.com/serde-rs/json), [embed-resource](https://github.com/nabijaczleweli/rust-embed-resource) (the exe icon), the [`windows`](https://github.com/microsoft/windows-rs) crate.
+- Crates we depend on: [serde](https://github.com/serde-rs/serde) (also the app's settings file), [thiserror](https://github.com/dtolnay/thiserror), [anyhow](https://github.com/dtolnay/anyhow), [tracing](https://github.com/tokio-rs/tracing), [jiff](https://github.com/BurntSushi/jiff), [clap](https://github.com/clap-rs/clap), [syn](https://github.com/dtolnay/syn), [cargo_metadata](https://github.com/oli-obk/cargo_metadata), [toml and toml_edit](https://github.com/toml-rs/toml) (`toml` also reads and writes the app's settings file), [walkdir](https://github.com/BurntSushi/walkdir), [serde_json](https://github.com/serde-rs/json), [embed-resource](https://github.com/nabijaczleweli/rust-embed-resource) (the exe icon), the [`windows`](https://github.com/microsoft/windows-rs) crate.
 - [PawnIO](https://github.com/namazso/PawnIO) and [PawnIO.Modules](https://github.com/namazso/PawnIO.Modules): the driver the app talks to, and the LGPL-2.1 modules shipped beside it, never committed.
 - The app icon (`services/monitor/api/assets/icon.ico`) is the owner's own work, made with Claude; it has no third-party source or license.
 - Developer tools we run, not copy: [cargo-nextest](https://github.com/nextest-rs/nextest), [cargo-deny](https://github.com/EmbarkStudios/cargo-deny) (Embark Studios), [cargo-shear](https://github.com/Boshen/cargo-shear), [typos](https://github.com/crate-ci/typos), [lefthook](https://github.com/evilmartians/lefthook) (Evil Martians), [cargo-binstall](https://github.com/cargo-bins/cargo-binstall), [zizmor](https://github.com/zizmorcore/zizmor), [taiki-e/install-action](https://github.com/taiki-e/install-action), [Swatinem/rust-cache](https://github.com/Swatinem/rust-cache).

@@ -9,8 +9,12 @@ publish.workspace = true
 
 [dependencies]
 monitor-application = { path = "../application" }
+monitor-domain = { path = "../domain" }
 platform-win32 = { workspace = true }
+serde = { workspace = true }
 thiserror = { workspace = true, features = ["std"] }
+toml = { workspace = true }
+tracing = { workspace = true }
 
 [dev-dependencies]
 platform-win32 = { workspace = true, features = ["test-support"] }
