@@ -9,7 +9,8 @@ mod style;
 pub mod testing;
 
 pub use ports::{
-    Extras, GpuPair, GpuSensors, ReadError, Sensor, Sensors, SettingsStore, StartupTask, StartupTaskError,
+    DriverStatus, Extras, GpuPair, GpuSensors, PawnIoStatus, ReadError, Sensor, Sensors, SettingsStore, StartupTask,
+    StartupTaskError,
 };
 pub use sample::{OverlayFrame, Sampler, SamplerControl};
 pub use settings::{

@@ -7,13 +7,14 @@ use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 
 use monitor_application::{
-    GpuPair, GpuSensors, OverlayFrame, Sampler, SamplerControl, Sensor, Sensors, Settings, SettingsStore, StartupTask,
-    load_settings,
+    DriverStatus, GpuPair, GpuSensors, OverlayFrame, Sampler, SamplerControl, Sensor, Sensors, Settings, SettingsStore,
+    StartupTask, load_settings,
 };
 use monitor_domain::MemoryKind;
 use monitor_infrastructure::{
-    AdapterSensors, CpuLoad, Ddr5Temperature, FrameCounter, FrameRate, MemoryLoad, PRESENT_PROVIDERS, RyzenTemperature,
-    SchtasksStartup, TASK_NAME, TomlSettingsStore, UnavailableSensor, is_present, or_unavailable, settings_path,
+    AdapterSensors, CpuLoad, Ddr5Temperature, FrameCounter, FrameRate, MemoryLoad, PRESENT_PROVIDERS, PawnIoProbe,
+    RyzenTemperature, SchtasksStartup, TASK_NAME, TomlSettingsStore, UnavailableSensor, is_present, reopening,
+    settings_path,
 };
 use monitor_interfaces::{OverlayView, Ui, UiParts};
 use platform_clock::{Clock, SystemClock};
@@ -61,11 +62,17 @@ pub fn build_sensors(modules: &Path, gpu: GpuPair, frames: Arc<FrameCounter>) ->
     Sensors {
         fps: Box::new(FrameRate::new(frames, std::process::id())),
         cpu_load: Box::new(CpuLoad::new()),
-        cpu_temp: or_unavailable(RyzenTemperature::open(modules)),
+        cpu_temp: reopening(|| PawnIoProbe.pawnio(), {
+            let modules = modules.to_owned();
+            move || RyzenTemperature::open(&modules)
+        }),
         gpu_load: gpu.load,
         gpu_temp: gpu.temp,
         memory_load: Box::new(MemoryLoad::new()),
-        memory_temp: or_unavailable(Ddr5Temperature::open(modules)),
+        memory_temp: reopening(|| PawnIoProbe.pawnio(), {
+            let modules = modules.to_owned();
+            move || Ddr5Temperature::open(&modules)
+        }),
     }
 }
 

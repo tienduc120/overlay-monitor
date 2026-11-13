@@ -77,3 +77,55 @@ pub trait SettingsStore {
     /// `SaveSettingsError` when the settings could not be written.
     fn save(&self, settings: &crate::Settings) -> Result<(), crate::SaveSettingsError>;
 }
+
+impl<S: Sensor + ?Sized> Sensor for Box<S> {
+    fn read(&mut self) -> Result<f64, ReadError> {
+        (**self).read()
+    }
+
+    fn extras(&self) -> Extras {
+        (**self).extras()
+    }
+}
+
+/// What the app knows of the `PawnIO` driver, which the temperatures of the CPU and the memory need.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PawnIoStatus {
+    Installed {
+        version: String,
+    },
+    /// Older than the first release that anti-cheat software accepts; `None` when the driver cannot say.
+    TooOld {
+        version: Option<String>,
+    },
+    NotInstalled,
+    /// The driver is there, but this process may not open it.
+    NeedsAdmin,
+    Unanswered {
+        reason: String,
+    },
+}
+
+impl PawnIoStatus {
+    /// One line for the settings window and for a sensor's reason.
+    #[must_use]
+    pub fn describe(&self) -> String {
+        match self {
+            Self::Installed { version } => format!("installed, version {version} ✓"),
+            Self::TooOld { version: Some(version) } => format!(
+                "version {version} is older than 2.1.0, the first that anti-cheat software accepts; please update"
+            ),
+            Self::TooOld { version: None } => {
+                "older than 2.1.0, the first that anti-cheat software accepts; please update".to_owned()
+            }
+            Self::NotInstalled => "not installed".to_owned(),
+            Self::NeedsAdmin => "installed, but Overlay Monitor is not running as administrator".to_owned(),
+            Self::Unanswered { reason } => format!("did not answer: {reason}"),
+        }
+    }
+}
+
+/// Asks the `PawnIO` driver how it stands, as often as the caller likes.
+pub trait DriverStatus {
+    fn pawnio(&self) -> PawnIoStatus;
+}

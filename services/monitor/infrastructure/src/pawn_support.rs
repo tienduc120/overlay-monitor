@@ -4,10 +4,10 @@ use std::io;
 use std::path::Path;
 use std::time::Duration;
 
-use monitor_application::ReadError;
+use monitor_application::{DriverStatus, Extras, PawnIoStatus, ReadError, Sensor};
 use platform_win32::Win32Error;
 use platform_win32::mutex::GlobalMutex;
-use platform_win32::pawnio::{PawnError, PawnModule};
+use platform_win32::pawnio::{PawnError, PawnModule, PawnVersion, driver_version};
 
 /// Other hardware monitors hold these locks too, so waiting longer would stall the overlay for nothing.
 const LOCK_TIMEOUT: Duration = Duration::from_millis(500);
@@ -40,6 +40,116 @@ pub(crate) enum LockError {
     Busy { name: String },
 }
 
+/// The first `PawnIO` that anti-cheat software accepts: 2.1.0's new signature fixed FACEIT's 2025 block.
+pub const OLDEST_PAWNIO: PawnVersion = PawnVersion {
+    major: 2,
+    minor: 1,
+    patch: 0,
+};
+
+/// Turns the driver's answer to the version call into what the app tells the user.
+#[must_use]
+pub fn classify(answer: Result<PawnVersion, PawnError>) -> PawnIoStatus {
+    match answer {
+        Ok(version) if version >= OLDEST_PAWNIO => PawnIoStatus::Installed {
+            version: version.to_string(),
+        },
+        Ok(version) => PawnIoStatus::TooOld {
+            version: Some(version.to_string()),
+        },
+        Err(PawnError::NoVersion) => PawnIoStatus::TooOld { version: None },
+        Err(PawnError::NotInstalled) => PawnIoStatus::NotInstalled,
+        Err(PawnError::AccessDenied) => PawnIoStatus::NeedsAdmin,
+        Err(error @ (PawnError::NotSupported | PawnError::NameTooLong)) => PawnIoStatus::Unanswered {
+            reason: error.to_string(),
+        },
+        Err(PawnError::Io(source)) => PawnIoStatus::Unanswered {
+            reason: format!("the call failed: {source}"),
+        },
+    }
+}
+
+/// Asks the installed driver for its version.
+#[must_use]
+pub fn pawnio_status() -> PawnIoStatus {
+    classify(driver_version())
+}
+
+/// The real driver, behind the application's [`DriverStatus`] port.
+#[derive(Debug)]
+pub struct PawnIoProbe;
+
+impl DriverStatus for PawnIoProbe {
+    fn pawnio(&self) -> PawnIoStatus {
+        pawnio_status()
+    }
+}
+
+enum Reopening<S> {
+    /// No sensor yet; each read asks the driver again, so an install while the app runs is noticed.
+    Waiting,
+    Open(S),
+    /// The module refuses this machine or its file is missing; asking again would change nothing.
+    GivenUp(String),
+}
+
+struct ReopeningSensor<P, F, S> {
+    probe: P,
+    open: F,
+    state: Reopening<S>,
+}
+
+impl<P, F, S> Sensor for ReopeningSensor<P, F, S>
+where
+    P: FnMut() -> PawnIoStatus + Send,
+    F: FnMut() -> Result<S, ReadError> + Send,
+    S: Sensor,
+{
+    fn read(&mut self) -> Result<f64, ReadError> {
+        match &mut self.state {
+            Reopening::Open(sensor) => return sensor.read(),
+            Reopening::GivenUp(reason) => return Err(ReadError::Unavailable(reason.clone())),
+            Reopening::Waiting => {}
+        }
+        let status = (self.probe)();
+        if !matches!(status, PawnIoStatus::Installed { .. }) {
+            return Err(ReadError::Unavailable(status.describe()));
+        }
+        match (self.open)() {
+            Ok(mut sensor) => {
+                let reading = sensor.read();
+                self.state = Reopening::Open(sensor);
+                reading
+            }
+            Err(ReadError::Unavailable(reason)) => {
+                self.state = Reopening::GivenUp(reason.clone());
+                Err(ReadError::Unavailable(reason))
+            }
+            Err(failed @ ReadError::Failed(_)) => Err(failed),
+        }
+    }
+
+    fn extras(&self) -> Extras {
+        match &self.state {
+            Reopening::Open(sensor) => sensor.extras(),
+            Reopening::Waiting | Reopening::GivenUp(_) => Extras::default(),
+        }
+    }
+}
+
+/// A sensor that opens only once `probe` says the driver is installed and recent enough, and tries again on each read
+/// until then. `open` that fails with `Unavailable` ends the tries; a plain failure is tried again.
+pub fn reopening<S: Sensor + 'static>(
+    probe: impl FnMut() -> PawnIoStatus + Send + 'static,
+    open: impl FnMut() -> Result<S, ReadError> + Send + 'static,
+) -> Box<dyn Sensor> {
+    Box::new(ReopeningSensor {
+        probe,
+        open,
+        state: Reopening::Waiting,
+    })
+}
+
 /// Loads `file` from `modules_dir`. What the machine lacks is `Unavailable`; anything else is `Failed`.
 pub(crate) fn load_module(modules_dir: &Path, file: &str) -> Result<PawnModule, ReadError> {
     let blob = std::fs::read(modules_dir.join(file)).map_err(|source| {
@@ -62,10 +172,12 @@ fn open_failure(source: PawnError, file: &str) -> ReadError {
         PawnError::NotInstalled | PawnError::AccessDenied | PawnError::NotSupported => {
             ReadError::Unavailable(source.to_string())
         }
-        PawnError::NameTooLong | PawnError::Io(_) => ReadError::Failed(Box::new(LoadError::Load {
-            file: file.to_owned(),
-            source,
-        })),
+        PawnError::NameTooLong | PawnError::NoVersion | PawnError::Io(_) => {
+            ReadError::Failed(Box::new(LoadError::Load {
+                file: file.to_owned(),
+                source,
+            }))
+        }
     }
 }
 

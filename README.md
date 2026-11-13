@@ -11,6 +11,7 @@ Read [AGENTS.md](AGENTS.md) first, then [docs/adr/](docs/adr/README.md).
 Overlay Monitor runs on Windows 10 1809 or later, x64.
 
 - The CPU and DDR5 temperatures need the PawnIO driver installed ([pawnio.eu](https://pawnio.eu), version 2.1.0 or later) and the app running as administrator.
+- A PawnIO older than 2.1.0 counts as not installed (FACEIT blocked the older driver in 2025; 2.1.0 carries a new signature). Installing it while the app runs is picked up on the next update.
 - FPS needs administrator or membership in the "Performance Log Users" group.
 - GPU load and temperature and CPU and memory load need neither.
 - `cargo xtask modules` downloads the pinned PawnIO modules, checks their hashes, and copies them into `target/{debug,release}/modules`. They are LGPL-2.1 and never committed; see [Credits](#credits).

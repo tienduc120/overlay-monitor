@@ -17,6 +17,7 @@ toml = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]
+monitor-application = { path = "../application", features = ["test-support"] }
 platform-win32 = { workspace = true, features = ["test-support"] }
 
 [lints]

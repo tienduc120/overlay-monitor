@@ -3,8 +3,13 @@
 
 use std::time::Duration;
 
-use windows::Win32::Foundation::{CloseHandle, HANDLE, WAIT_ABANDONED, WAIT_OBJECT_0, WAIT_TIMEOUT};
-use windows::Win32::System::Threading::{CreateMutexW, INFINITE, ReleaseMutex, WaitForSingleObject};
+use windows::Win32::Foundation::{
+    CloseHandle, ERROR_ACCESS_DENIED, HANDLE, WAIT_ABANDONED, WAIT_OBJECT_0, WAIT_TIMEOUT,
+};
+use windows::Win32::System::Threading::{
+    CreateMutexW, INFINITE, MUTEX_MODIFY_STATE, OpenMutexW, ReleaseMutex, SYNCHRONIZATION_SYNCHRONIZE,
+    WaitForSingleObject,
+};
 use windows::core::PCWSTR;
 
 use crate::Win32Error;
@@ -30,7 +35,18 @@ impl GlobalMutex {
         // One below INFINITE, so a huge timeout still ends.
         let millis = u32::try_from(timeout.as_millis()).unwrap_or(u32::MAX).min(INFINITE - 1);
         // SAFETY: `wide` is NUL-terminated and outlives the call; no security attributes are passed.
-        let handle = unsafe { CreateMutexW(None, false, PCWSTR(wide.as_ptr())) }?;
+        let created = unsafe { CreateMutexW(None, false, PCWSTR(wide.as_ptr())) };
+        let handle = match created {
+            Ok(handle) => handle,
+            // A vendor service may have made it with an ACL that lets others only wait on it and release it.
+            Err(denied) if denied.code() == ERROR_ACCESS_DENIED.to_hresult() => {
+                // SAFETY: `wide` is NUL-terminated and outlives the call.
+                unsafe { OpenMutexW(SYNCHRONIZATION_SYNCHRONIZE | MUTEX_MODIFY_STATE, false, PCWSTR(wide.as_ptr())) }
+                    // The refusal that sent us here is the more useful one when the open fails too.
+                    .map_err(|_open_failed| denied)?
+            }
+            Err(other) => return Err(other),
+        };
         // SAFETY: `handle` was just created and is owned by this function.
         let waited = unsafe { WaitForSingleObject(handle, millis) };
         // An abandoned mutex was left by a holder that died; it is still ours now.

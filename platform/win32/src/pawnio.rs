@@ -3,8 +3,8 @@
 //! `PawnIO` binds a loaded module to the handle that loaded it, so every [`PawnModule`] opens its own handle.
 
 use windows::Win32::Foundation::{
-    CloseHandle, ERROR_ACCESS_DENIED, ERROR_FILE_NOT_FOUND, ERROR_INVALID_PARAMETER, ERROR_NOT_SUPPORTED,
-    ERROR_PATH_NOT_FOUND, GENERIC_READ, GENERIC_WRITE, HANDLE,
+    CloseHandle, ERROR_ACCESS_DENIED, ERROR_FILE_NOT_FOUND, ERROR_INVALID_DATA, ERROR_INVALID_FUNCTION,
+    ERROR_INVALID_PARAMETER, ERROR_NOT_SUPPORTED, ERROR_PATH_NOT_FOUND, GENERIC_READ, GENERIC_WRITE, HANDLE,
 };
 use windows::Win32::Storage::FileSystem::{
     CreateFileW, FILE_FLAGS_AND_ATTRIBUTES, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING,
@@ -23,6 +23,8 @@ const fn ctl_code(function: u32) -> u32 {
 
 const IOCTL_PIO_LOAD_BINARY: u32 = ctl_code(0x821);
 const IOCTL_PIO_EXECUTE_FN: u32 = ctl_code(0x841);
+/// Added in `PawnIO` 2.1.0; 2.0.0 answers `STATUS_NOT_IMPLEMENTED`.
+const IOCTL_PIO_VERSION: u32 = ctl_code(0x861);
 
 /// The driver reads a function name from a fixed 32-byte field.
 const NAME_FIELD: usize = 32;
@@ -42,6 +44,9 @@ pub enum PawnError {
     /// A function name must fit the driver's 32-byte field with a terminating zero.
     #[error("function name is longer than 31 bytes")]
     NameTooLong,
+    /// The driver has no version call, which only releases older than 2.1.0 lack.
+    #[error("the driver does not report its version")]
+    NoVersion,
     #[error("PawnIO call failed")]
     Io(#[source] Win32Error),
 }
@@ -131,6 +136,69 @@ pub fn encode_execute(function: &str, input: &[u64]) -> Result<Vec<u8>, PawnErro
     buf.resize(NAME_FIELD, 0);
     buf.extend(input.iter().flat_map(|word| word.to_le_bytes()));
     Ok(buf)
+}
+
+/// The installed driver's version, ordered so a floor can be compared against it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct PawnVersion {
+    pub major: u8,
+    pub minor: u8,
+    pub patch: u8,
+}
+
+impl std::fmt::Display for PawnVersion {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}.{}.{}", self.major, self.minor, self.patch)
+    }
+}
+
+/// Splits the driver's version word, `(major << 16) | (minor << 8) | patch`.
+#[must_use]
+#[expect(clippy::cast_possible_truncation, reason = "each field is one byte of the word")]
+pub const fn decode_version(raw: u32) -> PawnVersion {
+    PawnVersion {
+        major: (raw >> 16) as u8,
+        minor: (raw >> 8) as u8,
+        patch: raw as u8,
+    }
+}
+
+/// Asks the driver for its version; this reads nothing from hardware.
+///
+/// # Errors
+/// [`PawnError::NotInstalled`], [`PawnError::AccessDenied`], [`PawnError::NoVersion`] for a driver older than 2.1.0,
+/// or [`PawnError::Io`].
+pub fn driver_version() -> Result<PawnVersion, PawnError> {
+    // The module type owns the handle, so it closes on every path out.
+    let device = PawnModule { handle: open_device()? };
+    let mut raw = 0_u32;
+    let mut written = 0_u32;
+    // SAFETY: there is no input; the output is the live local `raw` of exactly four bytes, and `written` outlives the
+    // call.
+    let called = unsafe {
+        DeviceIoControl(
+            device.handle,
+            IOCTL_PIO_VERSION,
+            None,
+            0,
+            Some((&raw mut raw).cast()),
+            4,
+            Some(&raw mut written),
+            None,
+        )
+    };
+    called.map_err(|e| {
+        let code = e.code();
+        if code == ERROR_INVALID_FUNCTION.to_hresult() || code == ERROR_NOT_SUPPORTED.to_hresult() {
+            PawnError::NoVersion
+        } else {
+            map_error(e, false)
+        }
+    })?;
+    if written != 4 {
+        return Err(PawnError::Io(ERROR_INVALID_DATA.to_hresult().into()));
+    }
+    Ok(decode_version(raw))
 }
 
 fn open_device() -> Result<HANDLE, PawnError> {
