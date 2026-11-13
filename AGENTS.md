@@ -97,6 +97,7 @@ Grow this by correction: when any tool gets something wrong, add the line.
 - **`doc_markdown` wants backticks** around identifiers in doc comments, such as `no_std` or `CreateNote`.
 - **Cargo treats a `members` glob that matches nothing as a literal path** and fails to load the workspace.
 - **Tests that need admin are `#[ignore]`.** The owner runs them with `--run-ignored only` in an elevated terminal.
+- **A test never writes the system clipboard or registers the real Ctrl+Shift+O or Ctrl+Shift+L.** The hooks run every test on each commit, so either would hit the owner's desktop. A test that must write the clipboard is `#[ignore = "writes the system clipboard"]` and runs in the owner's ignored run; the `Ui` copies through `UiParts::clipboard`, which a test records; `rig` in `ui/tests.rs` swaps the real shortcuts for Ctrl+Alt+F20 and F21.
 - **The agent's shell cannot elevate.**
 - **Launch the app with `Start-Process`**, because the guard refuses `cargo run` of an `-api` binary in the foreground.
 - **On Windows, a tool installed mid-session is not on the shell's PATH.** In PowerShell, reload it: `$env:Path = [Environment]::GetEnvironmentVariable('Path','User') + ';' + [Environment]::GetEnvironmentVariable('Path','Machine')`. In Git Bash use `/c/Users/...` paths, not `$USERPROFILE`.

@@ -1,3 +1,5 @@
+use std::cell::RefCell;
+use std::rc::Rc;
 use std::sync::mpsc::{RecvTimeoutError, TryRecvError, channel};
 use std::time::{Duration, Instant};
 
@@ -191,19 +193,53 @@ struct Rig {
     startup: FakeStartupTask,
     frames: std::sync::mpsc::Sender<OverlayFrame>,
     controls: std::sync::mpsc::Receiver<SamplerControl>,
+    /// What the UI put on its clipboard, which in a test never is the system one.
+    copied: Rc<RefCell<Vec<String>>>,
 }
 
 fn rig(settings: Settings, store: MemoryStore) -> Rig {
     rig_on(MessageWindow::create().unwrap(), settings, store)
 }
 
+/// `settings` with Ctrl+Alt+F20 and Ctrl+Alt+F21 in place of the real Ctrl+Shift+O and Ctrl+Shift+L: a test must never
+/// take those from the user's running app, or hold them while it starts. No other test uses these two.
+fn without_the_real_shortcuts(settings: Settings) -> Settings {
+    let real = Settings::default();
+    let stand_in = |keys: ShortcutKeys, key: u8| {
+        if keys == real.show_hide || keys == real.lock_unlock {
+            plain(key)
+        } else {
+            keys
+        }
+    };
+    Settings {
+        show_hide: stand_in(settings.show_hide, F20),
+        lock_unlock: stand_in(settings.lock_unlock, F21),
+        ..settings
+    }
+}
+
+#[test]
+fn a_rig_never_takes_the_real_shortcuts() {
+    let real = Settings::default();
+
+    let used = without_the_real_shortcuts(real.clone());
+
+    for keys in [used.show_hide, used.lock_unlock] {
+        assert!(keys != real.show_hide && keys != real.lock_unlock, "{keys}");
+    }
+}
+
 fn rig_on(window: MessageWindow, settings: Settings, store: MemoryStore) -> Rig {
+    let settings = without_the_real_shortcuts(settings);
     let overlay = OverlayWindow::create(window.sink()).unwrap();
     let image = Icon::stock().unwrap();
     let tray = TrayIcon::create(&window, "Overlay Monitor test", &image);
     let (frames, received) = channel();
     let (sampler, controls) = channel();
     let startup = FakeStartupTask::default();
+    let copied = Rc::new(RefCell::new(Vec::new()));
+    let record = Rc::clone(&copied);
     let ui = Ui::new(
         &window,
         UiParts {
@@ -217,6 +253,10 @@ fn rig_on(window: MessageWindow, settings: Settings, store: MemoryStore) -> Rig 
             startup: Box::new(startup.clone()),
             driver: Box::new(FakeDriverStatus(PawnIoStatus::NotInstalled)),
             system: Box::new(FakeSystemInfo(facts())),
+            clipboard: Box::new(move |_owner, text| {
+                record.borrow_mut().push(text.to_owned());
+                Ok(())
+            }),
         },
     );
     Rig {
@@ -226,6 +266,7 @@ fn rig_on(window: MessageWindow, settings: Settings, store: MemoryStore) -> Rig 
         startup,
         frames,
         controls,
+        copied,
     }
 }
 
@@ -478,7 +519,7 @@ fn an_ending_session_exits() {
 }
 
 /// Settings whose shortcuts (Ctrl+Alt+Shift+F21 and F22) neither the owner's running app nor the other tests' keys
-/// (F20, F23, F24) use.
+/// (Ctrl+Alt+Shift+F20, F23, F24) use.
 fn settings_with_rare_shortcuts(visible: bool) -> Settings {
     let rare = |key| ShortcutKeys {
         ctrl: true,
@@ -640,6 +681,8 @@ const F16: u8 = 0x7F;
 const F17: u8 = 0x80;
 const F18: u8 = 0x81;
 const F19: u8 = 0x82;
+const F20: u8 = 0x83;
+const F21: u8 = 0x84;
 
 /// The same keys with Ctrl and Alt only, for the tests that need a second set.
 fn plain(key: u8) -> ShortcutKeys {
@@ -870,6 +913,7 @@ fn copying_the_diagnostics_asks_the_sampler_and_does_not_hang_on_silence() {
         window,
         mut ui,
         controls,
+        copied,
         ..
     } = rig(Settings::default(), MemoryStore::empty());
     // A sampler that already ended: nobody can answer, so the copy must carry on at once.
@@ -880,4 +924,10 @@ fn copying_the_diagnostics_asks_the_sampler_and_does_not_hang_on_silence() {
     ui.apply(&window, actions);
 
     assert!(started.elapsed() < Duration::from_secs(1));
+    let copied = copied.borrow();
+    let [report] = copied.as_slice() else {
+        panic!("one report must be copied: {copied:?}");
+    };
+    assert!(report.starts_with("Overlay Monitor 0.1.0\r\n"), "{report}");
+    assert!(report.contains("  Sampler: did not answer within 2 s\r\n"), "{report}");
 }

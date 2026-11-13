@@ -10,4 +10,4 @@ mod ui;
 pub use overlay_view::{OverlayView, needs_redraw, text_style};
 
 pub use shortcuts::{Shortcuts, hotkey_keys, shortcut_keys};
-pub use ui::{Action, Ui, UiParts, UiState, menu_items, restore_focus_after};
+pub use ui::{Action, Clipboard, Ui, UiParts, UiState, menu_items, restore_focus_after};

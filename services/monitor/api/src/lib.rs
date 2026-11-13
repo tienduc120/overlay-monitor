@@ -22,6 +22,7 @@ use monitor_interfaces::{OverlayView, Ui, UiParts};
 use platform_clock::{Clock, SystemClock};
 use platform_win32::Win32Error;
 use platform_win32::account::current_user_sid;
+use platform_win32::clipboard::set_text;
 use platform_win32::cpu::cpu_identity;
 use platform_win32::dpi::{enable_per_monitor_awareness, small_icon_size};
 use platform_win32::etw::{TraceConsumer, TraceSession, start_session, stop_session};
@@ -334,6 +335,7 @@ fn show_overlay(
             startup: startup_task(),
             driver: Box::new(PawnIoProbe),
             system: Box::new(machine.system),
+            clipboard: Box::new(set_text),
         },
     );
     let waker = window.waker();

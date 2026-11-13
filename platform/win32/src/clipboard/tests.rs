@@ -1,6 +1,7 @@
 use super::*;
 
 #[test]
+#[ignore = "writes the system clipboard"]
 fn text_put_on_the_clipboard_reads_back() {
     let window = MessageWindow::create().expect("a message window");
     let report = "Overlay Monitor 0.1.0\r\nPawnIO: installed ✓\r\n";

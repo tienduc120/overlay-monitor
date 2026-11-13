@@ -7,7 +7,7 @@ use monitor_application::{
     DriverStatus, OverlayFrame, OverlayStyle, ReadingReport, SamplerControl, Settings, SettingsStore, StartupTask,
     SystemInfo, blank_frame, diagnostics_report, overlay_style,
 };
-use platform_win32::clipboard::set_text;
+use platform_win32::Win32Error;
 use platform_win32::dialog::DialogChange;
 use platform_win32::foreground::ForegroundWindow;
 use platform_win32::menu::{MenuItem, show_popup_menu};
@@ -175,6 +175,10 @@ impl ErrorLog {
     }
 }
 
+/// Puts text on the clipboard for the window that owns it. The app passes the system clipboard; a test records the
+/// text instead, so a test run never replaces what the user copied.
+pub type Clipboard = Box<dyn Fn(&MessageWindow, &str) -> Result<(), Win32Error>>;
+
 /// What the UI thread is built from: the windows, the sampler's two channels, and the settings it starts from and
 /// saves into.
 pub struct UiParts {
@@ -192,6 +196,8 @@ pub struct UiParts {
     pub driver: Box<dyn DriverStatus>,
     /// Says what this machine is, when the diagnostics are copied.
     pub system: Box<dyn SystemInfo>,
+    /// Where the diagnostics are copied to.
+    pub clipboard: Clipboard,
 }
 
 /// The UI thread's state: the overlay, the tray icon, the sampler's frames, and the settings.
@@ -218,6 +224,7 @@ pub struct Ui {
     startup: Box<dyn StartupTask>,
     driver: Box<dyn DriverStatus>,
     system: Box<dyn SystemInfo>,
+    clipboard: Clipboard,
     settings_window: Option<SettingsWindow>,
 }
 
@@ -236,6 +243,7 @@ impl Ui {
             startup,
             driver,
             system,
+            clipboard,
         } = parts;
         let shortcuts = Shortcuts::register(window, &settings);
         // A locked overlay can only be unlocked from the tray menu or by its shortcut; without the shortcut it starts
@@ -273,6 +281,7 @@ impl Ui {
             startup,
             driver,
             system,
+            clipboard,
             settings_window: None,
         };
         if lock_dropped {
@@ -389,7 +398,7 @@ impl Ui {
             Err(_gone) => readings_or_silence(Err(RecvTimeoutError::Disconnected)),
         };
         let report = diagnostics_report(&self.system.facts(), &readings);
-        if let Err(error) = set_text(window, &report) {
+        if let Err(error) = (self.clipboard)(window, &report) {
             tracing::warn!(?error, "the diagnostics could not be copied to the clipboard");
         }
     }
