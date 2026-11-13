@@ -8,6 +8,7 @@ pub mod cpu;
 pub mod dialog;
 pub mod dpi;
 pub mod etw;
+pub mod firmware;
 pub mod foreground;
 pub mod gpu;
 pub mod hotkey;

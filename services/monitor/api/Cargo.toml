@@ -13,7 +13,6 @@ path = "src/main.rs"
 
 [dependencies]
 monitor-application = { path = "../application" }
-monitor-domain = { path = "../domain" }
 monitor-infrastructure = { path = "../infrastructure" }
 monitor-interfaces = { path = "../interfaces" }
 platform-clock = { workspace = true }

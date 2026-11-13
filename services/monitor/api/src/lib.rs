@@ -10,11 +10,10 @@ use monitor_application::{
     DriverStatus, GpuPair, GpuSensors, OverlayFrame, Sampler, SamplerControl, Sensor, Sensors, Settings, SettingsStore,
     StartupTask, StartupTaskError, load_settings,
 };
-use monitor_domain::MemoryKind;
 use monitor_infrastructure::{
     AdapterSensors, CpuLoad, Ddr5Temperature, FrameCounter, FrameRate, MemoryLoad, PRESENT_PROVIDERS, PawnIoProbe,
-    SchtasksStartup, TASK_NAME, TomlSettingsStore, UnavailableSensor, cpu_temperature, is_present, reopening,
-    settings_path,
+    SchtasksStartup, TASK_NAME, TomlSettingsStore, UnavailableSensor, cpu_temperature, is_present, memory_kind,
+    memory_text, memory_types, reopening, settings_path,
 };
 use monitor_interfaces::{OverlayView, Ui, UiParts};
 use platform_clock::{Clock, SystemClock};
@@ -23,6 +22,7 @@ use platform_win32::account::current_user_sid;
 use platform_win32::cpu::cpu_identity;
 use platform_win32::dpi::{enable_per_monitor_awareness, small_icon_size};
 use platform_win32::etw::{TraceConsumer, TraceSession, start_session, stop_session};
+use platform_win32::firmware::smbios_table;
 use platform_win32::gpu::{GpuAdapter, gpu_adapters};
 use platform_win32::icon::Icon;
 use platform_win32::instance::SingleInstance;
@@ -61,6 +61,7 @@ pub fn modules_dir(exe: &Path) -> PathBuf {
 /// unavailable, so its line shows `—` and the others still work.
 pub fn build_sensors(modules: &Path, gpu: GpuPair, frames: Arc<FrameCounter>) -> Sensors {
     let cpu = cpu_identity();
+    let cpu_vendor = cpu.vendor;
     Sensors {
         fps: Box::new(FrameRate::new(frames, std::process::id())),
         cpu_load: Box::new(CpuLoad::new()),
@@ -73,9 +74,19 @@ pub fn build_sensors(modules: &Path, gpu: GpuPair, frames: Arc<FrameCounter>) ->
         memory_load: Box::new(MemoryLoad::new()),
         memory_temp: reopening(|| PawnIoProbe.pawnio(), {
             let modules = modules.to_owned();
-            move || Ddr5Temperature::open(&modules)
+            move || Ddr5Temperature::open(&modules, &cpu_vendor)
         }),
     }
+}
+
+/// The memory type byte of each module SMBIOS lists; a table that cannot be read counts as none.
+fn detect_memory() -> Vec<u8> {
+    let types = smbios_table()
+        .inspect_err(|error| tracing::warn!(?error, "the SMBIOS table could not be read"))
+        .map(|table| memory_types(&table))
+        .unwrap_or_default();
+    tracing::info!(memory = %memory_text(&types), "installed memory");
+    types
 }
 
 fn unavailable(reason: &str) -> Box<dyn Sensor> {
@@ -101,8 +112,8 @@ pub fn run() -> ExitCode {
         }
     };
     let store: Box<dyn SettingsStore> = Box::new(TomlSettingsStore::new(settings_file()));
-    // Task 15 detects the memory; until then the DDR5 layout is the default.
-    let settings = load_settings(store.as_ref(), MemoryKind::Ddr5);
+    let memory = detect_memory();
+    let settings = load_settings(store.as_ref(), memory_kind(&memory));
     if settings.start_with_windows
         && let Ok(task) =
             own_startup_task().inspect_err(|reason| tracing::warn!(reason, "the startup task is not refreshed"))

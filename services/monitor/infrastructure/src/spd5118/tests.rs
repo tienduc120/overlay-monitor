@@ -5,9 +5,10 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering::SeqCst};
 use std::time::{Duration, Instant};
 
 use monitor_application::{ReadError, Sensor};
+use platform_win32::cpu::CpuVendor;
 use platform_win32::mutex::GlobalMutex;
 
-use super::{Ddr5Temperature, HubReader, SmbusRead, celsius, is_hub};
+use super::{Ddr5Temperature, HubReader, SmbusRead, celsius, describe_identity, is_hub, smbus_modules};
 
 #[test]
 fn a_hub_answers_0x51_then_0x18() {
@@ -164,7 +165,7 @@ fn a_failed_hub_read_after_the_scan_is_a_failed_read_that_keeps_the_hubs() {
 
 #[test]
 fn a_missing_module_file_is_unavailable_and_says_how_to_get_it() {
-    let reply = Ddr5Temperature::open(Path::new("no-such-dir"));
+    let reply = Ddr5Temperature::open(Path::new("no-such-dir"), &CpuVendor::Amd);
 
     assert!(
         matches!(reply, Err(ReadError::Unavailable(ref why)) if why.contains("cargo xtask modules")),
@@ -179,7 +180,10 @@ fn modules() -> PathBuf {
 #[test]
 #[ignore = "needs PawnIO, DDR5 on an AMD board, and an elevated terminal"]
 fn the_hottest_ddr5_stick_reads_a_plausible_value() {
-    let t = Ddr5Temperature::open(&modules()).unwrap().read().unwrap();
+    let t = Ddr5Temperature::open(&modules(), &CpuVendor::Amd)
+        .unwrap()
+        .read()
+        .unwrap();
     assert!((10.0..=95.0).contains(&t), "{t}");
 }
 
@@ -197,4 +201,28 @@ fn each_stick_is_reported_in_address_order() {
     reader.read().unwrap();
 
     assert_eq!(reader.sticks(), Some(vec![36.25, 33.25]));
+}
+
+#[test]
+#[ignore = "needs PawnIO, DDR5 on an Intel board, and an elevated terminal"]
+fn the_intel_board_ddr5_reads_a_plausible_value() {
+    let t = Ddr5Temperature::open(&modules(), &CpuVendor::Intel)
+        .unwrap()
+        .read()
+        .unwrap();
+    assert!((10.0..=95.0).contains(&t), "{t}");
+}
+
+#[test]
+fn an_intel_cpu_tries_the_i801_module_first() {
+    assert_eq!(smbus_modules(CpuVendor::Intel), ["SmbusI801.bin", "SmbusPIIX4.bin"]);
+    assert_eq!(smbus_modules(CpuVendor::Amd), ["SmbusPIIX4.bin", "SmbusI801.bin"]);
+    assert_eq!(smbus_modules(CpuVendor::Other), ["SmbusPIIX4.bin", "SmbusI801.bin"]);
+}
+
+#[test]
+fn the_identity_reads_as_name_io_base_and_pci_ids() {
+    let text = describe_identity([0x34_58_49_49_50, 0x0B00, 0x7E12_1462_790B_1022]);
+
+    assert_eq!(text, "PIIX4 at I/O 0x0B00, PCI 1022:790B, subsystem 1462:7E12");
 }

@@ -1,13 +1,16 @@
-//! `DDR5` temperature from each module's `SPD5118` hub, over the `SMBus` through `PawnIO`'s `SmbusPIIX4` module.
+//! `DDR5` temperature from each module's `SPD5118` hub, over the `SMBus` through `PawnIO`'s `SmbusPIIX4` (AMD) or
+//! `SmbusI801` (Intel) module.
 
 use std::path::Path;
 
 use monitor_application::{Extras, ReadError, Sensor};
+use platform_win32::cpu::CpuVendor;
 use platform_win32::pawnio::PawnModule;
 
-use crate::pawn_support::{call_one, load_module, narrow, with_lock};
+use crate::pawn_support::{call, call_one, load_module, narrow, with_lock};
 
-const MODULE: &str = "SmbusPIIX4.bin";
+const AMD_MODULE: &str = "SmbusPIIX4.bin";
+const INTEL_MODULE: &str = "SmbusI801.bin";
 const SMBUS_LOCK: &str = r"Global\Access_SMBUS.HTP.Method";
 /// DIMM slots answer on 0x50 to 0x57.
 const SLOT_ADDRESSES: std::ops::RangeInclusive<u8> = 0x50..=0x57;
@@ -22,6 +25,11 @@ const REG_TEMPERATURE: u64 = 0x31;
 /// One `SMBus` read: what the sensor needs from the bus, so its scan and lock logic runs without hardware.
 pub(crate) trait SmbusRead {
     fn read(&self, address: u8, register: u64, protocol: u64) -> Result<u64, ReadError>;
+
+    /// The controller's identity words, for the log; a bus that cannot say reports none.
+    fn identity(&self) -> Option<[u64; 3]> {
+        None
+    }
 }
 
 impl SmbusRead for PawnModule {
@@ -31,6 +39,13 @@ impl SmbusRead for PawnModule {
             "ioctl_smbus_xfer",
             &[u64::from(address), READ, register, protocol],
         )
+    }
+
+    fn identity(&self) -> Option<[u64; 3]> {
+        let words = call(self, "ioctl_identity", &[], 3)
+            .inspect_err(|error| tracing::debug!(%error, "the SMBus controller did not give its identity"))
+            .ok()?;
+        <[u64; 3]>::try_from(words).ok()
     }
 }
 
@@ -64,6 +79,7 @@ impl<B: SmbusRead> HubReader<B> {
         with_lock(lock, || {
             if hubs.is_none() {
                 *hubs = Some(scan_hubs(bus)?);
+                log_identity(bus);
             }
             let known = hubs.as_deref().unwrap_or_default();
             if known.is_empty() {
@@ -85,6 +101,12 @@ impl<B> HubReader<B> {
     /// Each stick's last reading in address order; `None` until a scan has found hubs.
     pub(crate) fn sticks(&self) -> Option<Vec<f64>> {
         (!self.last.is_empty()).then(|| self.last.clone())
+    }
+}
+
+fn log_identity<B: SmbusRead>(bus: &B) {
+    if let Some(words) = bus.identity() {
+        tracing::info!(controller = %describe_identity(words), "DDR5 SMBus controller");
     }
 }
 
@@ -124,8 +146,8 @@ impl Ddr5Temperature {
     ///
     /// # Errors
     /// `Unavailable` when the module file, `PawnIO`, elevation, or a supported chipset is missing; `Failed` otherwise.
-    pub fn open(modules_dir: &Path) -> Result<Self, ReadError> {
-        let module = load_module(modules_dir, MODULE)?;
+    pub fn open(modules_dir: &Path, vendor: &CpuVendor) -> Result<Self, ReadError> {
+        let module = load_first(modules_dir, smbus_modules(*vendor))?;
         Ok(Self {
             reader: HubReader::new(module, SMBUS_LOCK),
         })
@@ -151,6 +173,45 @@ impl Sensor for Ddr5Temperature {
             ..Extras::default()
         }
     }
+}
+
+/// The `SMBus` modules in the order to try: the CPU's vendor says which chipset family is likely.
+pub(crate) fn smbus_modules(vendor: CpuVendor) -> [&'static str; 2] {
+    match vendor {
+        CpuVendor::Intel => [INTEL_MODULE, AMD_MODULE],
+        CpuVendor::Amd | CpuVendor::Other => [AMD_MODULE, INTEL_MODULE],
+    }
+}
+
+/// Loads the first module the machine accepts; a module that does not suit this chipset is `Unavailable`, so the next
+/// is tried, and when none loads the preferred module's reason is the one reported.
+fn load_first(modules_dir: &Path, files: [&'static str; 2]) -> Result<PawnModule, ReadError> {
+    let [preferred, fallback] = files;
+    match load_module(modules_dir, preferred) {
+        Err(ReadError::Unavailable(reason)) => {
+            load_module(modules_dir, fallback).map_err(|_second| ReadError::Unavailable(reason))
+        }
+        other => other,
+    }
+}
+
+/// Reads the controller's identity words as text: its name, I/O base, PCI ids, and subsystem ids.
+pub(crate) fn describe_identity(words: [u64; 3]) -> String {
+    let [name, io_base, ids] = words;
+    let name: String = name
+        .to_le_bytes()
+        .into_iter()
+        .take_while(|&byte| byte != 0)
+        .map(char::from)
+        .collect();
+    let field = |shift: u32| (ids >> shift) & 0xFFFF;
+    format!(
+        "{name} at I/O {io_base:#06X}, PCI {:04X}:{:04X}, subsystem {:04X}:{:04X}",
+        field(0),
+        field(16),
+        field(32),
+        field(48),
+    )
 }
 
 /// An `SPD5118` hub reports device type 0x51 in MR0 and revision 0x18 in MR1.

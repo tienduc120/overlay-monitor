@@ -5,6 +5,7 @@ mod frame_rate;
 mod gpu;
 mod intel;
 mod memory_load;
+mod memory_type;
 mod pawn_support;
 mod ryzen;
 mod settings_file;
@@ -17,6 +18,7 @@ pub use frame_rate::{FrameCounter, FrameRate, PRESENT_PROVIDERS, frames_per_seco
 pub use gpu::{AdapterSensors, GpuLoad, GpuTemperature, adapter_for, engine_load_percent, pick_adapter};
 pub use intel::{IntelTemperature, package_celsius};
 pub use memory_load::MemoryLoad;
+pub use memory_type::{memory_kind, memory_text, memory_types};
 pub use pawn_support::{OLDEST_PAWNIO, PawnIoProbe, classify, cpu_temperature, pawnio_status, reopening};
 pub use ryzen::RyzenTemperature;
 pub use settings_file::{TomlSettingsStore, settings_path};

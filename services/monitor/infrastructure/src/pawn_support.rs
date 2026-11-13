@@ -227,12 +227,21 @@ pub(crate) enum CallError {
     TooWide { function: &'static str, value: u64 },
 }
 
+/// Calls a module function and returns `out_len` register-sized words.
+pub(crate) fn call(
+    module: &PawnModule,
+    function: &'static str,
+    input: &[u64],
+    out_len: usize,
+) -> Result<Vec<u64>, ReadError> {
+    module
+        .execute(function, input, out_len)
+        .map_err(|source| ReadError::Failed(Box::new(CallError::Call { function, source })))
+}
+
 /// Calls a module function that returns one register-sized word.
 pub(crate) fn call_one(module: &PawnModule, function: &'static str, input: &[u64]) -> Result<u64, ReadError> {
-    let words = module
-        .execute(function, input, 1)
-        .map_err(|source| ReadError::Failed(Box::new(CallError::Call { function, source })))?;
-    words
+    call(module, function, input, 1)?
         .first()
         .copied()
         .ok_or_else(|| ReadError::Failed(Box::new(CallError::Empty { function })))
