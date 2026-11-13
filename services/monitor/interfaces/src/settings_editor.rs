@@ -96,8 +96,8 @@ enum Spot {
 pub(crate) struct SettingsEditor {
     original: Settings,
     edited: Settings,
-    /// What each shortcut field holds, refused or not. A clash is judged between these, so fixing either field clears
-    /// it; the edited settings keep only the last good keys.
+    /// What each shortcut field holds, refused or not; only its two shortcuts are read. A clash is judged between these,
+    /// so fixing either field clears it; the edited settings keep only the last good keys.
     typed: Settings,
     problems: BTreeMap<Spot, Problem>,
 }
