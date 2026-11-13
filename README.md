@@ -11,6 +11,7 @@ Read [AGENTS.md](AGENTS.md) first, then [docs/adr/](docs/adr/README.md).
 Overlay Monitor runs on Windows 10 1809 or later, x64.
 
 - The CPU and DDR5 temperatures need the PawnIO driver installed ([pawnio.eu](https://pawnio.eu), version 2.1.0 or later) and the app running as administrator.
+- Intel CPUs are supported through the `IntelMSR` module but untested: the maker has no Intel machine.
 - A PawnIO older than 2.1.0 counts as not installed (FACEIT blocked the older driver in 2025; 2.1.0 carries a new signature). Installing it while the app runs is picked up on the next update.
 - FPS needs administrator or membership in the "Performance Log Users" group.
 - GPU load and temperature and CPU and memory load need neither.
@@ -105,3 +106,5 @@ This base stands on public work. Material that is copied or adapted is listed in
 | [AGENTS.md](https://agents.md)                                                                                            | the shared agent instruction format                                                                                   |
 | [PresentMon](https://github.com/GameTechDev/PresentMon) (MIT)                                                             | counting presented frames from ETW                                                                                    |
 | [spd5118 documentation](https://docs.kernel.org/hwmon/spd5118.html) (Linux kernel)                                        | the SPD5118 temperature register format                                                                               |
+| [Linux `k10temp` driver](https://docs.kernel.org/hwmon/k10temp.html) (GPL-2.0) | the Tctl offsets for Zen 1 and Zen+ parts (`tctl_offset_table`): the values only, no code |
+| Intel 64 and IA-32 Architectures Software Developer's Manual, Volume 4 | the layout of MSRs 0x1B1 (package thermal status) and 0x1A2 (temperature target) |

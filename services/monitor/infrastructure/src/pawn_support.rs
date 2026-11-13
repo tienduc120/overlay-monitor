@@ -6,8 +6,12 @@ use std::time::Duration;
 
 use monitor_application::{DriverStatus, Extras, PawnIoStatus, ReadError, Sensor};
 use platform_win32::Win32Error;
+use platform_win32::cpu::{CpuIdentity, CpuVendor};
 use platform_win32::mutex::GlobalMutex;
 use platform_win32::pawnio::{PawnError, PawnModule, PawnVersion, driver_version};
+
+use crate::intel::IntelTemperature;
+use crate::ryzen::RyzenTemperature;
 
 /// Other hardware monitors hold these locks too, so waiting longer would stall the overlay for nothing.
 const LOCK_TIMEOUT: Duration = Duration::from_millis(500);
@@ -148,6 +152,20 @@ pub fn reopening<S: Sensor + 'static>(
         open,
         state: Reopening::Waiting,
     })
+}
+
+/// The CPU temperature source for this processor's vendor.
+///
+/// # Errors
+/// `Unavailable` for a vendor with no source, or what opening the vendor's sensor reports.
+pub fn cpu_temperature(modules_dir: &Path, cpu: &CpuIdentity) -> Result<Box<dyn Sensor>, ReadError> {
+    match cpu.vendor {
+        CpuVendor::Amd => Ok(Box::new(RyzenTemperature::open(modules_dir, cpu)?)),
+        CpuVendor::Intel => Ok(Box::new(IntelTemperature::open(modules_dir)?)),
+        CpuVendor::Other => Err(ReadError::Unavailable(
+            "no temperature source for this CPU vendor".to_owned(),
+        )),
+    }
 }
 
 /// Loads `file` from `modules_dir`. What the machine lacks is `Unavailable`; anything else is `Failed`.

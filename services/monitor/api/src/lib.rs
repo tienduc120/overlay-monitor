@@ -13,13 +13,14 @@ use monitor_application::{
 use monitor_domain::MemoryKind;
 use monitor_infrastructure::{
     AdapterSensors, CpuLoad, Ddr5Temperature, FrameCounter, FrameRate, MemoryLoad, PRESENT_PROVIDERS, PawnIoProbe,
-    RyzenTemperature, SchtasksStartup, TASK_NAME, TomlSettingsStore, UnavailableSensor, is_present, reopening,
+    SchtasksStartup, TASK_NAME, TomlSettingsStore, UnavailableSensor, cpu_temperature, is_present, reopening,
     settings_path,
 };
 use monitor_interfaces::{OverlayView, Ui, UiParts};
 use platform_clock::{Clock, SystemClock};
 use platform_win32::Win32Error;
 use platform_win32::account::current_user_sid;
+use platform_win32::cpu::cpu_identity;
 use platform_win32::dpi::{enable_per_monitor_awareness, small_icon_size};
 use platform_win32::etw::{TraceConsumer, TraceSession, start_session, stop_session};
 use platform_win32::gpu::{GpuAdapter, gpu_adapters};
@@ -59,12 +60,13 @@ pub fn modules_dir(exe: &Path) -> PathBuf {
 /// Every sensor the overlay reads, around the GPU pair already opened. One that cannot open on this machine reads as
 /// unavailable, so its line shows `—` and the others still work.
 pub fn build_sensors(modules: &Path, gpu: GpuPair, frames: Arc<FrameCounter>) -> Sensors {
+    let cpu = cpu_identity();
     Sensors {
         fps: Box::new(FrameRate::new(frames, std::process::id())),
         cpu_load: Box::new(CpuLoad::new()),
         cpu_temp: reopening(|| PawnIoProbe.pawnio(), {
             let modules = modules.to_owned();
-            move || RyzenTemperature::open(&modules)
+            move || cpu_temperature(&modules, &cpu)
         }),
         gpu_load: gpu.load,
         gpu_temp: gpu.temp,

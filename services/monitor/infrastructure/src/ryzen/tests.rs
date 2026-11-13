@@ -1,6 +1,7 @@
 use std::path::{Path, PathBuf};
 
 use monitor_application::{ReadError, Sensor};
+use platform_win32::cpu::cpu_identity;
 
 use super::{RyzenTemperature, tctl_celsius};
 
@@ -23,16 +24,31 @@ fn modules() -> PathBuf {
 #[test]
 #[ignore = "needs PawnIO, an AMD Ryzen CPU, and an elevated terminal"]
 fn the_ryzen_temperature_reads_a_plausible_value() {
-    let t = RyzenTemperature::open(&modules()).unwrap().read().unwrap();
+    let t = RyzenTemperature::open(&modules(), &cpu_identity())
+        .unwrap()
+        .read()
+        .unwrap();
     assert!((15.0..=100.0).contains(&t), "{t}");
 }
 
 #[test]
 fn a_missing_module_file_is_unavailable_and_says_how_to_get_it() {
-    let reply = RyzenTemperature::open(Path::new("no-such-dir"));
+    let reply = RyzenTemperature::open(Path::new("no-such-dir"), &cpu_identity());
 
     assert!(
         matches!(reply, Err(ReadError::Unavailable(ref why)) if why.contains("cargo xtask modules")),
         "{reply:?}"
     );
+}
+
+#[test]
+fn zen_1_and_zen_plus_models_subtract_their_offset() {
+    let offset = |family, brand| super::tctl_offset(family, brand);
+
+    assert!((offset(0x17, "AMD Ryzen 7 1800X Eight-Core Processor") - 20.0).abs() < 1e-9);
+    assert!((offset(0x17, "AMD Ryzen 7 2700X Eight-Core Processor") - 10.0).abs() < 1e-9);
+    assert!((offset(0x17, "AMD Ryzen Threadripper 1950X 16-Core Processor") - 27.0).abs() < 1e-9);
+    assert!(offset(0x17, "AMD Ryzen 7 2700 Eight-Core Processor").abs() < 1e-9);
+    assert!(offset(0x19, "AMD Ryzen 7 7800X3D 8-Core Processor").abs() < 1e-9);
+    assert!(offset(0x19, "AMD Ryzen 7 1800X Eight-Core Processor").abs() < 1e-9);
 }
