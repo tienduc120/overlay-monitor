@@ -1,7 +1,7 @@
 //! The UI thread's plumbing: the hidden message window that tray callbacks and wake-ups arrive at, the loop that turns
 //! them into [`UiEvent`]s, and where other windows report what the user did.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
 use std::ptr;
 use std::rc::Rc;
@@ -13,14 +13,15 @@ use windows::Win32::System::Threading::INFINITE;
 use windows::Win32::UI::Shell::NIN_SELECT;
 use windows::Win32::UI::WindowsAndMessaging::{
     ChangeWindowMessageFilterEx, CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GWLP_USERDATA,
-    GetMessageW, GetWindowLongPtrW, MSG, MSGFLT_ALLOW, MsgWaitForMultipleObjects, PM_REMOVE, PeekMessageW,
-    PostMessageW, PostQuitMessage, QS_ALLINPUT, RegisterClassExW, RegisterWindowMessageW, SetTimer, SetWindowLongPtrW,
-    TranslateMessage, WM_APP, WM_CLOSE, WM_CONTEXTMENU, WM_ENDSESSION, WM_HOTKEY, WM_NULL, WM_QUERYENDSESSION,
-    WM_TIMER, WNDCLASSEXW, WS_EX_TOOLWINDOW, WS_OVERLAPPED,
+    GetMessageW, GetWindowLongPtrW, IsDialogMessageW, MSG, MSGFLT_ALLOW, MsgWaitForMultipleObjects, PM_REMOVE,
+    PeekMessageW, PostMessageW, PostQuitMessage, QS_ALLINPUT, RegisterClassExW, RegisterWindowMessageW, SetTimer,
+    SetWindowLongPtrW, TranslateMessage, WM_APP, WM_CLOSE, WM_CONTEXTMENU, WM_ENDSESSION, WM_HOTKEY, WM_NULL,
+    WM_QUERYENDSESSION, WM_TIMER, WNDCLASSEXW, WS_EX_TOOLWINDOW, WS_OVERLAPPED,
 };
 use windows::core::{PCWSTR, w};
 
 use crate::Win32Error;
+use crate::dialog::DialogChange;
 use crate::overlay::screen_point;
 
 const CLASS: PCWSTR = w!("OverlayMonitorMessages");
@@ -54,6 +55,8 @@ pub enum UiEvent {
     Tick,
     /// Windows is signing out or shutting down, and this process is about to be ended.
     SessionEnding,
+    /// The user did something to a control of the open dialog.
+    Dialog { control: u16, change: DialogChange },
 }
 
 /// What the loop's handler asks of it after an event.
@@ -72,12 +75,14 @@ pub struct MessageWindow {
 }
 
 /// The events the window procedure and the sinks have collected for the loop's handler.
-struct Queue {
+pub(crate) struct Queue {
     events: RefCell<VecDeque<UiEvent>>,
     /// The id Explorer broadcasts when its taskbar is created again.
     taskbar_created: u32,
     /// Runs once when the session ends, before the process may be killed.
     session_end: RefCell<Option<Box<dyn Fn()>>>,
+    /// The open modeless dialog, whose keys the loop offers to `IsDialogMessageW` first.
+    dialog: Cell<Option<HWND>>,
 }
 
 impl Queue {
@@ -87,6 +92,10 @@ impl Queue {
 
     fn pop(&self) -> Option<UiEvent> {
         self.events.borrow_mut().pop_front()
+    }
+
+    pub(crate) fn set_dialog(&self, dialog: Option<HWND>) {
+        self.dialog.set(dialog);
     }
 }
 
@@ -133,6 +142,7 @@ impl MessageWindow {
             events: RefCell::new(VecDeque::new()),
             taskbar_created: taskbar_created_message(),
             session_end: RefCell::new(None),
+            dialog: Cell::new(None),
         });
         // SAFETY: the window is ours. The pointer stays valid while the window exists: `Drop` destroys the window
         // before `queue` is freed. Until it is stored, the procedure finds 0 and leaves the state alone.
@@ -179,6 +189,10 @@ impl MessageWindow {
         }
     }
 
+    pub(crate) fn queue(&self) -> Rc<Queue> {
+        Rc::clone(&self.queue)
+    }
+
     pub(crate) fn handle(&self) -> HWND {
         self.window
     }
@@ -217,6 +231,12 @@ pub fn run_message_loop(window: &MessageWindow, handler: &mut dyn FnMut(UiEvent)
         // 0 is WM_QUIT and -1 a failure; neither leaves anything to dispatch.
         if got.0 <= 0 {
             return;
+        }
+        if let Some(dialog) = window.queue.dialog.get() {
+            // SAFETY: the dialog is alive while the queue holds it, and `message` was just filled in.
+            if unsafe { IsDialogMessageW(dialog, &raw const message) }.as_bool() {
+                continue;
+            }
         }
         // SAFETY: `message` was just filled in by GetMessageW. TranslateMessage only says whether it posted a
         // character message, and DispatchMessageW returns the window procedure's answer; neither matters here.

@@ -3,6 +3,7 @@ use std::time::{Duration, Instant};
 
 use monitor_application::testing::MemoryStore;
 use monitor_application::{OverlayFrame, SamplerControl, Settings, ShortcutKeys};
+use platform_win32::dialog::DialogChange;
 use platform_win32::hotkey::Hotkey;
 use platform_win32::icon::Icon;
 use platform_win32::overlay::OverlayWindow;
@@ -118,6 +119,23 @@ fn the_tray_icon_comes_back_after_explorer_restarts() {
         }
         .on_event(UiEvent::TaskbarRestarted),
         vec![Action::ReaddTrayIcon]
+    );
+}
+
+#[test]
+fn a_dialog_event_without_an_open_dialog_does_nothing() {
+    let event = UiEvent::Dialog {
+        control: 1,
+        change: DialogChange::Clicked,
+    };
+
+    assert_eq!(
+        UiState {
+            visible: true,
+            locked: false
+        }
+        .on_event(event),
+        Vec::<Action>::new()
     );
 }
 

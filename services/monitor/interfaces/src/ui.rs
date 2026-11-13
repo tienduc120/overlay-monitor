@@ -57,7 +57,7 @@ impl UiState {
             UiEvent::Hotkey { id: LOCK_HOTKEY } => self.toggle_lock(),
             UiEvent::Wake if self.visible => vec![Action::DrawLatest],
             UiEvent::Tick if self.visible => vec![Action::CheckStalled],
-            UiEvent::Hotkey { .. } | UiEvent::Wake | UiEvent::Tick => Vec::new(),
+            UiEvent::Hotkey { .. } | UiEvent::Wake | UiEvent::Tick | UiEvent::Dialog { .. } => Vec::new(),
             UiEvent::TaskbarRestarted => vec![Action::ReaddTrayIcon],
             UiEvent::SessionEnding => vec![Action::Exit],
         }
