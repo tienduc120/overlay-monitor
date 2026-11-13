@@ -8,7 +8,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
     GWL_EXSTYLE, GetWindowLongPtrW, GetWindowRect, HTCAPTION, HWND_NOTOPMOST, IsWindow, MA_NOACTIVATE, MSG, PM_REMOVE,
     PeekMessageW, PostMessageW, SPI_GETWORKAREA, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER,
     SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS, SendMessageW, SetWindowPos, SystemParametersInfoW, WM_CLOSE, WM_EXITSIZEMOVE,
-    WM_MOUSEACTIVATE, WM_NCHITTEST, WM_NCRBUTTONUP, WM_QUIT, WS_EX_TOPMOST,
+    WM_MOUSEACTIVATE, WM_NCHITTEST, WM_NCRBUTTONUP, WM_QUIT, WS_EX_LAYERED, WS_EX_TOPMOST, WS_EX_TRANSPARENT,
 };
 
 use super::{OverlayWindow, on_moving, premultiplied_bgra, screen_point, shared, snap_distance, window_size};
@@ -386,4 +386,26 @@ fn primary_monitor_bounds() -> RECT {
     // SAFETY: `info` is a live local with its size set.
     unsafe { GetMonitorInfoW(monitor, &raw mut info) }.ok().unwrap();
     info.rcMonitor
+}
+
+fn ex_style(window: &OverlayWindow) -> usize {
+    // SAFETY: reading the window's extended style has no preconditions.
+    unsafe { GetWindowLongPtrW(window.window, GWL_EXSTYLE) }.cast_unsigned()
+}
+
+#[test]
+fn click_through_comes_and_goes_with_the_lock() {
+    let window = OverlayWindow::create(EventSink::discard()).unwrap();
+    let transparent = WS_EX_TRANSPARENT.0 as usize;
+    let layered = WS_EX_LAYERED.0 as usize;
+
+    window.set_click_through(true);
+    let locked = ex_style(&window);
+    window.set_click_through(false);
+    let unlocked = ex_style(&window);
+
+    assert_ne!(locked & transparent, 0, "a locked overlay lets clicks through");
+    assert_eq!(unlocked & transparent, 0, "an unlocked one can be grabbed");
+    assert_ne!(locked & layered, 0, "it stays layered");
+    assert_ne!(unlocked & layered, 0, "it stays layered");
 }

@@ -3,19 +3,24 @@
 use std::sync::mpsc::{Receiver, Sender};
 
 use monitor_application::{OverlayFrame, OverlayStyle, SamplerControl, Settings, SettingsStore, overlay_style};
+use platform_win32::foreground::ForegroundWindow;
 use platform_win32::menu::{MenuItem, show_popup_menu};
 use platform_win32::tray::TrayIcon;
 use platform_win32::ui::{Flow, MessageWindow, UiEvent};
 
 use crate::OverlayView;
+use crate::shortcuts::{LOCK_HOTKEY, SHOW_HIDE_HOTKEY, Shortcuts};
 
 const SHOW_OVERLAY: u16 = 1;
 const EXIT: u16 = 2;
+const LOCK: u16 = 3;
 
-/// Whether the overlay is shown, the one fact the events and commands depend on.
+/// Whether the overlay is shown and whether it is locked in place, the facts the events and commands depend on.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct UiState {
     pub visible: bool,
+    /// A locked overlay lets clicks through, so it cannot be dragged.
+    pub locked: bool,
 }
 
 /// What the UI thread must do next, in order.
@@ -30,7 +35,9 @@ pub enum Action {
     DrawLatest,
     /// Store where the overlay is now in the settings, and save them.
     RememberPosition,
-    /// Store whether the overlay is shown in the settings, and save them.
+    /// Lock or unlock the overlay: clicks pass through while it is locked, and its style follows.
+    SetLocked(bool),
+    /// Store whether the overlay is shown and locked in the settings, and save them.
     SaveSettings,
     ReaddTrayIcon,
     Exit,
@@ -39,11 +46,12 @@ pub enum Action {
 impl UiState {
     pub fn on_event(&mut self, event: UiEvent) -> Vec<Action> {
         match event {
-            UiEvent::TrayClick => self.toggle(),
+            UiEvent::TrayClick | UiEvent::Hotkey { id: SHOW_HIDE_HOTKEY } => self.toggle(),
             UiEvent::TrayMenu { x, y } | UiEvent::OverlayMenu { x, y } => vec![Action::ShowMenu { x, y }],
             UiEvent::OverlayMoved => vec![Action::RememberPosition],
+            UiEvent::Hotkey { id: LOCK_HOTKEY } => self.toggle_lock(),
             UiEvent::Wake if self.visible => vec![Action::DrawLatest],
-            UiEvent::Wake => Vec::new(),
+            UiEvent::Hotkey { .. } | UiEvent::Wake => Vec::new(),
             UiEvent::TaskbarRestarted => vec![Action::ReaddTrayIcon],
         }
     }
@@ -51,9 +59,16 @@ impl UiState {
     pub fn on_command(&mut self, id: u16) -> Vec<Action> {
         match id {
             SHOW_OVERLAY => self.toggle(),
+            LOCK => self.toggle_lock(),
             EXIT => vec![Action::Exit],
             _ => Vec::new(),
         }
+    }
+
+    /// The style changes with the lock, so the newest frame is drawn again in it.
+    fn toggle_lock(&mut self) -> Vec<Action> {
+        self.locked = !self.locked;
+        vec![Action::SetLocked(self.locked), Action::DrawLatest, Action::SaveSettings]
     }
 
     /// A shown overlay may be showing a stale frame, so showing it draws the newest one at once.
@@ -68,12 +83,17 @@ impl UiState {
 }
 
 /// The menu both the tray icon and the overlay open.
-pub fn menu_items(visible: bool) -> Vec<MenuItem> {
+pub fn menu_items(state: &UiState) -> Vec<MenuItem> {
     vec![
         MenuItem {
             id: SHOW_OVERLAY,
             text: String::from("Show overlay"),
-            checked: visible,
+            checked: state.visible,
+        },
+        MenuItem {
+            id: LOCK,
+            text: String::from("Lock position"),
+            checked: state.locked,
         },
         MenuItem {
             id: EXIT,
@@ -81,6 +101,12 @@ pub fn menu_items(visible: bool) -> Vec<MenuItem> {
             checked: false,
         },
     ]
+}
+
+/// Whether the window that was in front before the menu opened gets the focus back, given what was chosen (`None`
+/// when the menu was dismissed). Every choice does for now.
+pub fn restore_focus_after(_command: Option<u16>) -> bool {
+    true
 }
 
 /// Remembers the last failure of one kind of operation, so a failure that repeats every frame is logged once.
@@ -119,6 +145,8 @@ pub struct Ui {
     frames: Receiver<OverlayFrame>,
     /// Held so that dropping the `Ui` is what tells the sampler to stop; settings changes will be sent through it.
     _sampler: Sender<SamplerControl>,
+    /// Held so the shortcuts stay registered until the `Ui` is dropped.
+    _shortcuts: Shortcuts,
     settings: Settings,
     store: Box<dyn SettingsStore>,
     style: OverlayStyle,
@@ -129,37 +157,53 @@ pub struct Ui {
 }
 
 impl Ui {
-    /// Places the overlay where the settings say, styles it by them, and shows or hides it as they say.
-    pub fn new(parts: UiParts) -> Self {
+    /// Registers the shortcuts, places the overlay where the settings say, styles it by them, locks it and shows or
+    /// hides it as they say.
+    pub fn new(window: &MessageWindow, parts: UiParts) -> Self {
         let UiParts {
             view,
             tray,
             frames,
             sampler,
-            settings,
+            mut settings,
             store,
         } = parts;
+        let shortcuts = Shortcuts::register(window, &settings);
+        // A locked overlay can only be unlocked from the tray menu or by its shortcut; without the shortcut it starts
+        // unlocked, so it can always be grabbed.
+        let lock_dropped = settings.locked && !shortcuts.lock_unlock_registered();
+        if lock_dropped {
+            tracing::warn!("the lock shortcut is not available, so the overlay starts unlocked");
+            settings.locked = false;
+        }
         view.place(settings.position.as_ref());
+        view.set_click_through(settings.locked);
         if settings.visible {
             view.show();
         } else {
             view.hide();
         }
-        Self {
+        let mut ui = Self {
             state: UiState {
                 visible: settings.visible,
+                locked: settings.locked,
             },
             tray,
             view,
             frames,
             _sampler: sampler,
+            _shortcuts: shortcuts,
             style: overlay_style(&settings),
             settings,
             store,
             latest: None,
             draw_errors: ErrorLog::default(),
             tray_errors: ErrorLog::default(),
+        };
+        if lock_dropped {
+            ui.save_settings();
         }
+        ui
     }
 
     pub fn handle(&mut self, window: &MessageWindow, event: UiEvent) -> Flow {
@@ -188,22 +232,38 @@ impl Ui {
             Action::ReaddTrayIcon => self.readd_tray_icon(),
             Action::RememberPosition => self.remember_position(),
             Action::SaveSettings => self.save_settings(),
+            Action::SetLocked(locked) => self.set_locked(locked),
             Action::ShowMenu { x, y } => return self.choose_from_menu(window, x, y),
             Action::Exit => return Flow::Exit,
         }
         Flow::Continue
     }
 
-    /// Shows the menu and applies the command chosen from it, if any.
+    /// Shows the menu and applies the command chosen from it, if any. Whatever window the user was in goes back in
+    /// front once it closes, because showing the menu made this app's hidden window the foreground.
     fn choose_from_menu(&mut self, window: &MessageWindow, x: i32, y: i32) -> Flow {
-        let items = menu_items(self.state.visible);
-        match show_popup_menu(window, &items, x, y) {
+        let items = menu_items(&self.state);
+        let before = ForegroundWindow::current();
+        let choice = show_popup_menu(window, &items, x, y);
+        if restore_focus_after(choice)
+            && let Some(before) = before
+        {
+            // A window that closed meanwhile, or a refusal, leaves the focus where Windows put it.
+            before.restore();
+        }
+        match choice {
             Some(id) => {
                 let followed = self.state.on_command(id);
                 self.apply(window, followed)
             }
             None => Flow::Continue,
         }
+    }
+
+    fn set_locked(&mut self, locked: bool) {
+        self.settings.locked = locked;
+        self.view.set_click_through(locked);
+        self.style = overlay_style(&self.settings);
     }
 
     /// Keeps the place the overlay was dragged to. A position Windows cannot report leaves the saved one as it was.
@@ -217,6 +277,7 @@ impl Ui {
     /// A failed save is logged and the app carries on with what it has in memory.
     fn save_settings(&mut self) {
         self.settings.visible = self.state.visible;
+        self.settings.locked = self.state.locked;
         if let Err(error) = self.store.save(&self.settings) {
             tracing::warn!(?error, "the settings could not be saved");
         }

@@ -8,6 +8,7 @@ pub mod dpi;
 pub mod etw;
 pub mod foreground;
 pub mod gpu;
+pub mod hotkey;
 pub mod icon;
 pub mod instance;
 pub mod known_folder;

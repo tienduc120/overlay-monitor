@@ -13,7 +13,6 @@ Left out on purpose until a real project needs it. Each entry says what triggers
 | Open the hardware locks | Plan 2, or a friend's PC showing "—" with PawnIO installed | The shared hardware locks are opened as well as created: when `CreateMutexW` is denied (a vendor service's narrow DACL), fall back to `OpenMutexW(SYNCHRONIZE \| MUTEX_MODIFY_STATE)`, so a temperature does not stay at "—" |
 | Zen 1 and Zen+ Tctl offset | Before any build goes to someone else's PC | The Tctl offset is subtracted: +20 °C on the 1600X, 1700X, and 1800X, +10 °C on the 2700X, +27 °C on first and second generation Threadripper |
 | UI-side staleness watchdog | Plan 2 | When no frame arrives for three update intervals, the overlay shows "—" |
-| Restore the foreground window after the right-click menu | Plan 2 | After the overlay's menu closes, the window that had focus gets it back; a borderless game no longer loses keyboard focus |
 | Run without the tray icon | Before start-with-Windows ships | A failed tray-icon add at startup no longer exits the app: it runs without the icon and adds it on `TaskbarCreated` |
 | Restart a stopped ETW session | Plan 2's diagnostics | An ETW session stopped from outside is started again, so FPS does not stay "—" |
 | Orderly exit at sign-out | Plan 2 | `WM_QUERYENDSESSION` and `WM_ENDSESSION` are handled, so the app exits in order when the user signs out |

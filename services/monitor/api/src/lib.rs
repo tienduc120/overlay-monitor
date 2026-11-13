@@ -181,14 +181,17 @@ fn show_overlay(
     let (frames, received) = mpsc::channel();
     let view = OverlayView::new(overlay);
     let (control, controls) = mpsc::channel();
-    let mut ui = Ui::new(UiParts {
-        view,
-        tray,
-        frames: received,
-        sampler: control,
-        settings,
-        store,
-    });
+    let mut ui = Ui::new(
+        &window,
+        UiParts {
+            view,
+            tray,
+            frames: received,
+            sampler: control,
+            settings,
+            store,
+        },
+    );
     let waker = window.waker();
     let (session, consumer) = trace.unzip();
     std::thread::scope(|scope| {

@@ -19,6 +19,10 @@ Overlay Monitor runs on Windows 10 1809 or later, x64.
 
 A value that is missing or unreadable shows "—". The tray icon shows or hides the overlay, and its menu exits the app. Drag the overlay anywhere; it snaps to monitor edges.
 
+- Lock position (in the overlay's or the tray's menu) makes clicks pass through the overlay, so it cannot be dragged or right-clicked; unlock it from the tray menu or with Ctrl+Shift+L.
+- Ctrl+Shift+O shows or hides the overlay and Ctrl+Shift+L locks or unlocks it, from any program. If another program holds a combination, the app logs it and carries on without it; a saved lock is then dropped when Ctrl+Shift+L is the one that is taken.
+- After either menu closes, the window you were in gets the focus back.
+
 ## Readings
 
 Each line shows the values the settings turn on, in this order. A missing or stale value shows "—". Every value comes from a call the app already makes ([ADR-0019](docs/adr/0019-extra-readings.md)).

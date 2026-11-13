@@ -31,6 +31,11 @@ impl OverlayView {
         self.window.hide();
     }
 
+    /// Lets clicks pass through the overlay (`on`) or catches them again.
+    pub fn set_click_through(&self, on: bool) {
+        self.window.set_click_through(on);
+    }
+
     pub fn is_visible(&self) -> bool {
         self.window.is_visible()
     }

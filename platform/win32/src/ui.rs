@@ -15,7 +15,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
     ChangeWindowMessageFilterEx, CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GWLP_USERDATA,
     GetMessageW, GetWindowLongPtrW, MSG, MSGFLT_ALLOW, MsgWaitForMultipleObjects, PM_REMOVE, PeekMessageW,
     PostMessageW, PostQuitMessage, QS_ALLINPUT, RegisterClassExW, RegisterWindowMessageW, SetWindowLongPtrW,
-    TranslateMessage, WM_APP, WM_CLOSE, WM_CONTEXTMENU, WNDCLASSEXW, WS_EX_TOOLWINDOW, WS_OVERLAPPED,
+    TranslateMessage, WM_APP, WM_CLOSE, WM_CONTEXTMENU, WM_HOTKEY, WNDCLASSEXW, WS_EX_TOOLWINDOW, WS_OVERLAPPED,
 };
 use windows::core::{PCWSTR, w};
 
@@ -41,6 +41,8 @@ pub enum UiEvent {
     OverlayMenu { x: i32, y: i32 },
     /// The user finished dragging the overlay, so it has a place worth remembering.
     OverlayMoved,
+    /// A registered global hotkey was pressed; `id` is the one it was registered with.
+    Hotkey { id: i32 },
     /// The sampler thread has a new frame.
     Wake,
     /// Explorer restarted, so the tray icon is gone and must be added again.
@@ -268,6 +270,9 @@ unsafe extern "system" fn window_procedure(window: HWND, message: u32, wparam: W
         let event = match message {
             TRAY_CALLBACK => tray_event(wparam, lparam),
             WAKE => Some(UiEvent::Wake),
+            WM_HOTKEY => Some(UiEvent::Hotkey {
+                id: i32::try_from(wparam.0).unwrap_or(0),
+            }),
             other if is_taskbar_created(other, queue.taskbar_created) => Some(UiEvent::TaskbarRestarted),
             _ => None,
         };

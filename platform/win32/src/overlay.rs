@@ -28,12 +28,12 @@ use windows::Win32::Graphics::Gdi::{
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::HiDpi::GetDpiForWindow;
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, DestroyWindow, GWLP_USERDATA, GetCursorPos, GetWindowLongPtrW, GetWindowRect,
-    HTCAPTION, HWND_TOPMOST, IsWindowVisible, MA_NOACTIVATE, PostQuitMessage, RegisterClassExW, SW_HIDE,
+    CreateWindowExW, DefWindowProcW, DestroyWindow, GWL_EXSTYLE, GWLP_USERDATA, GetCursorPos, GetWindowLongPtrW,
+    GetWindowRect, HTCAPTION, HWND_TOPMOST, IsWindowVisible, MA_NOACTIVATE, PostQuitMessage, RegisterClassExW, SW_HIDE,
     SW_SHOWNOACTIVATE, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SetWindowLongPtrW, SetWindowPos,
     ShowWindow, ULW_ALPHA, USER_DEFAULT_SCREEN_DPI, UpdateLayeredWindow, WM_CLOSE, WM_DPICHANGED, WM_EXITSIZEMOVE,
     WM_MOUSEACTIVATE, WM_MOVING, WM_NCHITTEST, WM_NCRBUTTONDOWN, WM_NCRBUTTONUP, WNDCLASSEXW, WS_EX_LAYERED,
-    WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
+    WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_POPUP,
 };
 use windows::core::{PCWSTR, w};
 
@@ -152,6 +152,16 @@ impl OverlayWindow {
     pub fn hide(&self) {
         // SAFETY: as in `show`.
         unsafe { ShowWindow(self.window, SW_HIDE) }.as_bool();
+    }
+
+    /// Makes mouse clicks pass through the window to what is behind it (`on`), or lets it catch them again.
+    pub fn set_click_through(&self, on: bool) {
+        // SAFETY: reading the window's extended style has no preconditions.
+        let style = unsafe { GetWindowLongPtrW(self.window, GWL_EXSTYLE) }.cast_unsigned();
+        let flag = WS_EX_TRANSPARENT.0 as usize;
+        let style = if on { style | flag } else { style & !flag };
+        // SAFETY: the window is alive and ours; only the transparent bit changes. The style takes effect at once.
+        unsafe { SetWindowLongPtrW(self.window, GWL_EXSTYLE, style.cast_signed()) };
     }
 
     /// Puts the window back above other topmost windows, without moving, resizing, showing, or activating it.
