@@ -292,7 +292,7 @@ checksum = "cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98"
 
 [[package]]
 name = "monitor-api"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "embed-resource",
  "monitor-application",
@@ -307,7 +307,7 @@ dependencies = [
 
 [[package]]
 name = "monitor-application"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "jiff",
  "monitor-domain",
@@ -318,7 +318,7 @@ dependencies = [
 
 [[package]]
 name = "monitor-domain"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "jiff",
  "thiserror",
@@ -326,7 +326,7 @@ dependencies = [
 
 [[package]]
 name = "monitor-infrastructure"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "monitor-application",
  "monitor-domain",
@@ -339,7 +339,7 @@ dependencies = [
 
 [[package]]
 name = "monitor-interfaces"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "monitor-application",
  "platform-win32",
@@ -366,14 +366,14 @@ checksum = "a89322df9ebe1c1578d689c92318e070967d1042b512afbe49518723f4e6d5cd"
 
 [[package]]
 name = "platform-clock"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "jiff",
 ]
 
 [[package]]
 name = "platform-win32"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "thiserror",
  "windows",
@@ -890,7 +890,7 @@ dependencies = [
 
 [[package]]
 name = "xtask"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "cargo_metadata",
