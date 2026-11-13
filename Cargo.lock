@@ -527,6 +527,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "monitor-api"
+version = "0.1.0"
+dependencies = [
+ "monitor-application",
+ "monitor-infrastructure",
+ "monitor-interfaces",
+ "platform-clock",
+ "platform-win32",
+ "thiserror",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "monitor-application"
 version = "0.1.0"
 dependencies = [

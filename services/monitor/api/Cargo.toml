@@ -1,0 +1,32 @@
+[package]
+name = "monitor-api"
+description = "The composition root: wires the sensors, the sampler, the frame trace, the overlay, and the tray icon into the app."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "overlay-monitor"
+path = "src/main.rs"
+
+[dependencies]
+monitor-application = { path = "../application" }
+monitor-infrastructure = { path = "../infrastructure" }
+monitor-interfaces = { path = "../interfaces" }
+platform-clock = { workspace = true }
+platform-win32 = { workspace = true }
+thiserror = { workspace = true, features = ["std"] }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+[dev-dependencies]
+monitor-application = { path = "../application", features = ["test-support"] }
+
+[features]
+# Asks Windows for elevation at start, which the PawnIO temperatures need.
+elevated = []
+
+[lints]
+workspace = true

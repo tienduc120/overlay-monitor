@@ -1,0 +1,222 @@
+//! The composition root: the one place that knows which adapter backs each sensor. It installs the subscriber,
+//! opens the windows, and runs the sampler and the frame counter beside the UI loop.
+
+use std::path::{Path, PathBuf};
+use std::process::ExitCode;
+use std::sync::Arc;
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
+
+use monitor_application::{OverlayFrame, Sampler, Sensor, Sensors, default_style};
+use monitor_infrastructure::{
+    CpuLoad, Ddr5Temperature, FrameCounter, FrameRate, GpuLoad, GpuTemperature, MemoryLoad, PRESENT_PROVIDERS,
+    RyzenTemperature, UnavailableSensor, is_present, or_unavailable, pick_adapter,
+};
+use monitor_interfaces::{OverlayView, Ui};
+use platform_clock::{Clock, SystemClock};
+use platform_win32::Win32Error;
+use platform_win32::dpi::enable_per_monitor_awareness;
+use platform_win32::etw::{TraceConsumer, TraceSession, start_session};
+use platform_win32::gpu::gpu_adapters;
+use platform_win32::instance::SingleInstance;
+use platform_win32::overlay::OverlayWindow;
+use platform_win32::tray::TrayIcon;
+use platform_win32::ui::{MessageWindow, run_message_loop};
+use tracing_subscriber::EnvFilter;
+use tracing_subscriber::filter::LevelFilter;
+
+/// Held while a copy runs, so a second copy in this session exits at once.
+const INSTANCE_NAME: &str = r"Local\OverlayMonitor";
+const TRACE_SESSION: &str = "OverlayMonitor";
+const TOOLTIP: &str = "Overlay Monitor";
+const FPS_NEEDS_ADMIN: &str = "frame counting needs admin or the Performance Log Users group";
+const NO_GPU: &str = "no GPU adapter was found";
+
+/// Why the overlay could not open.
+#[derive(Debug, thiserror::Error)]
+enum OpenError {
+    #[error("create the message window")]
+    MessageWindow(#[source] Win32Error),
+    #[error("create the overlay window")]
+    OverlayWindow(#[source] Win32Error),
+    #[error("add the tray icon")]
+    TrayIcon(#[source] Win32Error),
+}
+
+/// Where `cargo xtask modules` puts the `PawnIO` modules: `modules` next to the exe.
+pub fn modules_dir(exe: &Path) -> PathBuf {
+    exe.with_file_name("modules")
+}
+
+/// Every sensor the overlay reads. One that cannot open on this machine reads as unavailable, so its line shows `—`
+/// and the others still work.
+pub fn build_sensors(modules: &Path, gpu_luid: Option<u64>, frames: Arc<FrameCounter>) -> Sensors {
+    let (gpu_load, gpu_temp) = match gpu_luid {
+        Some(luid) => (
+            or_unavailable(GpuLoad::open(luid)),
+            Box::new(GpuTemperature::new(luid)) as Box<dyn Sensor>,
+        ),
+        None => (unavailable(NO_GPU), unavailable(NO_GPU)),
+    };
+    Sensors {
+        fps: Box::new(FrameRate::new(frames, std::process::id())),
+        cpu_load: Box::new(CpuLoad::new()),
+        cpu_temp: or_unavailable(RyzenTemperature::open(modules)),
+        gpu_load,
+        gpu_temp,
+        memory_load: Box::new(MemoryLoad::new()),
+        memory_temp: or_unavailable(Ddr5Temperature::open(modules)),
+    }
+}
+
+fn unavailable(reason: &str) -> Box<dyn Sensor> {
+    Box::new(UnavailableSensor(reason.to_owned()))
+}
+
+/// Runs the overlay until the user exits it or Windows asks it to close.
+pub fn run() -> ExitCode {
+    install_subscriber();
+    if let Err(error) = enable_per_monitor_awareness() {
+        // Something set it first; the overlay still runs, only sized for whatever awareness that was.
+        tracing::warn!(?error, "per-monitor DPI awareness was already set");
+    }
+    let _instance = match SingleInstance::acquire(INSTANCE_NAME) {
+        Ok(Some(instance)) => instance,
+        Ok(None) => {
+            tracing::info!("another copy is running");
+            return ExitCode::SUCCESS;
+        }
+        Err(error) => {
+            tracing::error!(?error, "claim the single-instance name");
+            return ExitCode::FAILURE;
+        }
+    };
+    let gpu_luid = followed_gpu();
+    let trace = start_frame_trace();
+    let counter = FrameCounter::new();
+    let mut sensors = build_sensors(&own_modules_dir(), gpu_luid, Arc::clone(&counter));
+    if trace.is_none() {
+        sensors.fps = unavailable(FPS_NEEDS_ADMIN);
+    }
+    let sampler = Sampler::new(sensors, SystemClock);
+    match show_overlay(sampler, trace, &counter) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => {
+            tracing::error!(?error, "open the overlay");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn install_subscriber() {
+    let filter = EnvFilter::builder()
+        .with_default_directive(LevelFilter::INFO.into())
+        .from_env_lossy();
+    #[expect(clippy::disallowed_methods, reason = "the composition root installs the subscriber")]
+    tracing_subscriber::fmt()
+        .with_writer(std::io::stderr)
+        .with_env_filter(filter)
+        .init();
+}
+
+/// The LUID of the adapter the GPU lines follow, or `None` when no adapter answers.
+fn followed_gpu() -> Option<u64> {
+    let adapters = gpu_adapters()
+        .inspect_err(|error| tracing::warn!(?error, "list the GPU adapters"))
+        .unwrap_or_default();
+    let adapter = pick_adapter(&adapters)?;
+    tracing::info!(name = %adapter.name, "following this GPU");
+    Some(adapter.luid)
+}
+
+/// The frame trace, or `None` when this account may not start one.
+fn start_frame_trace() -> Option<(TraceSession, TraceConsumer)> {
+    start_session(TRACE_SESSION, PRESENT_PROVIDERS)
+        .inspect_err(|error| tracing::warn!(?error, "{FPS_NEEDS_ADMIN}"))
+        .ok()
+}
+
+fn own_modules_dir() -> PathBuf {
+    match std::env::current_exe() {
+        Ok(exe) => modules_dir(&exe),
+        Err(error) => {
+            tracing::warn!(
+                ?error,
+                "the exe's path is unknown, so the modules are looked for in the working directory"
+            );
+            PathBuf::from("modules")
+        }
+    }
+}
+
+/// Opens the overlay and the tray icon, runs the sampler and the frame counter beside the UI loop until it ends, then
+/// stops them in order.
+fn show_overlay(
+    mut sampler: Sampler<SystemClock>,
+    trace: Option<(TraceSession, TraceConsumer)>,
+    counter: &FrameCounter,
+) -> Result<(), OpenError> {
+    let window = MessageWindow::create().map_err(OpenError::MessageWindow)?;
+    let overlay = OverlayWindow::create(window.sink()).map_err(OpenError::OverlayWindow)?;
+    let tray = TrayIcon::add(&window, TOOLTIP).map_err(OpenError::TrayIcon)?;
+    let (frames, received) = mpsc::channel();
+    let view = OverlayView::new(overlay);
+    view.show();
+    let mut ui = Ui::new(view, tray, received, default_style());
+    let (stop, stopped) = mpsc::channel();
+    let waker = window.waker();
+    let (session, consumer) = trace.unzip();
+    std::thread::scope(|scope| {
+        scope.spawn(move || sample_until_stopped(&mut sampler, &frames, || waker.wake(), &stopped));
+        if let Some(consumer) = consumer {
+            scope.spawn(move || count_frames(consumer, counter));
+        }
+        run_message_loop(&window, &mut |event| ui.handle(&window, event));
+        // The scope joins both threads next: the sampler sees its stop sender gone, and the consumer's run ends with
+        // the session, even when stopping it fails.
+        drop(stop);
+        if let Some(session) = &session
+            && let Err(error) = session.stop()
+        {
+            tracing::warn!(?error, "stop the frame trace");
+        }
+    });
+    // The tray icon, which `ui` holds, goes before the window the shell knows it by.
+    drop(ui);
+    drop(window);
+    Ok(())
+}
+
+/// Sends a frame and wakes the UI to draw it once an interval, until `stop` gets a message or its sender is gone.
+fn sample_until_stopped<C: Clock>(
+    sampler: &mut Sampler<C>,
+    frames: &Sender<OverlayFrame>,
+    wake: impl Fn(),
+    stop: &Receiver<()>,
+) {
+    loop {
+        if frames.send(sampler.sample()).is_err() {
+            // Nobody is left to draw a frame.
+            return;
+        }
+        wake();
+        match stop.recv_timeout(sampler.interval()) {
+            Err(RecvTimeoutError::Timeout) => {}
+            Ok(()) | Err(RecvTimeoutError::Disconnected) => return,
+        }
+    }
+}
+
+/// Counts every frame presented, by process, until the session stops.
+fn count_frames(consumer: TraceConsumer, counter: &FrameCounter) {
+    let outcome = consumer.run(&mut |event| {
+        if is_present(event) {
+            counter.record(event.process_id);
+        }
+    });
+    if let Err(error) = outcome {
+        tracing::warn!(?error, "frame counting stopped");
+    }
+}
+
+#[cfg(test)]
+mod tests;
