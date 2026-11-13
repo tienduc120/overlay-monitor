@@ -7,7 +7,11 @@ use monitor_application::{GpuPair, Line, ReadError, Sampler, Sensor, Sensors, Se
 use monitor_infrastructure::{FrameCounter, UnavailableSensor};
 use platform_clock::{FixedClock, Timestamp};
 
-use super::{SamplerControl, build_sensors, modules_dir, refresh_startup_task, sample_until_stopped};
+use monitor_application::StartupTask;
+
+use super::{
+    SamplerControl, UnavailableStartup, build_sensors, modules_dir, refresh_startup_task, sample_until_stopped,
+};
 
 fn fixed_sensors() -> Sensors {
     let fixed = || -> Box<dyn Sensor> { Box::new(FakeSensor::fixed(50.0)) };
@@ -164,4 +168,13 @@ fn a_refused_startup_task_does_not_stop_the_start() {
     refresh_startup_task(&settings, &task);
 
     assert_eq!(task.calls(), [true]);
+}
+
+#[test]
+fn an_unavailable_startup_task_answers_why_to_every_change() {
+    let task = UnavailableStartup("the user is unknown".to_owned());
+
+    let refused = [task.set(true), task.set(false)].map(|outcome| outcome.unwrap_err().0.to_string());
+
+    assert_eq!(refused, ["the user is unknown", "the user is unknown"]);
 }

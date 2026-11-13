@@ -1,10 +1,10 @@
 use std::sync::mpsc::{TryRecvError, channel};
 use std::time::{Duration, Instant};
 
-use monitor_application::testing::MemoryStore;
-use monitor_application::{OverlayFrame, SamplerControl, Settings, ShortcutKeys, overlay_style};
+use monitor_application::testing::{FakeDriverStatus, FakeStartupTask, MemoryStore};
+use monitor_application::{OverlayFrame, PawnIoStatus, SamplerControl, Settings, ShortcutKeys, overlay_style};
 use platform_win32::dialog::{Dialog, DialogChange};
-use platform_win32::hotkey::Hotkey;
+use platform_win32::hotkey::{Hotkey, HotkeyError};
 use platform_win32::icon::Icon;
 use platform_win32::overlay::OverlayWindow;
 use platform_win32::tray::TrayIcon;
@@ -185,6 +185,7 @@ struct Rig {
     window: MessageWindow,
     ui: Ui,
     store: MemoryStore,
+    startup: FakeStartupTask,
     frames: std::sync::mpsc::Sender<OverlayFrame>,
     controls: std::sync::mpsc::Receiver<SamplerControl>,
 }
@@ -199,6 +200,7 @@ fn rig_on(window: MessageWindow, settings: Settings, store: MemoryStore) -> Rig 
     let tray = TrayIcon::create(&window, "Overlay Monitor test", &image);
     let (frames, received) = channel();
     let (sampler, controls) = channel();
+    let startup = FakeStartupTask::default();
     let ui = Ui::new(
         &window,
         UiParts {
@@ -209,12 +211,15 @@ fn rig_on(window: MessageWindow, settings: Settings, store: MemoryStore) -> Rig 
             settings,
             store: Box::new(store.clone()),
             gpu_names: vec!["First GPU".to_owned(), "Second GPU".to_owned()],
+            startup: Box::new(startup.clone()),
+            driver: Box::new(FakeDriverStatus(PawnIoStatus::NotInstalled)),
         },
     );
     Rig {
         window,
         ui,
         store,
+        startup,
         frames,
         controls,
     }
@@ -607,4 +612,198 @@ fn opening_settings_again_keeps_the_open_window() {
     open_settings(&mut rig);
 
     assert_eq!(dialog(&rig.ui).text(221), "2", "a new window would show the saved 1.0");
+}
+
+/// Ctrl+Alt+Shift with a function key from F13 to F19, which no other test registers, as tests in other processes
+/// run at the same time and a global hotkey is held by one window only.
+fn rare(key: u8) -> ShortcutKeys {
+    ShortcutKeys {
+        ctrl: true,
+        shift: true,
+        alt: true,
+        key,
+    }
+}
+
+const F13: u8 = 0x7C;
+const F14: u8 = 0x7D;
+const F15: u8 = 0x7E;
+const F16: u8 = 0x7F;
+const F17: u8 = 0x80;
+const F18: u8 = 0x81;
+const F19: u8 = 0x82;
+
+/// The same keys with Ctrl and Alt only, for the tests that need a second set.
+fn plain(key: u8) -> ShortcutKeys {
+    ShortcutKeys {
+        ctrl: true,
+        shift: false,
+        alt: true,
+        key,
+    }
+}
+
+fn settings_with_shortcuts(show_hide: u8, lock_unlock: u8) -> Settings {
+    Settings {
+        show_hide: rare(show_hide),
+        lock_unlock: rare(lock_unlock),
+        ..Settings::default()
+    }
+}
+
+#[test]
+fn the_shortcuts_rest_while_the_settings_window_is_open() {
+    let mut rig = rig(settings_with_shortcuts(F15, F19), MemoryStore::empty());
+    let other = MessageWindow::create().unwrap();
+    assert!(
+        matches!(
+            Hotkey::register(&other, 9, hotkey_keys(rare(F15))),
+            Err(HotkeyError::Taken)
+        ),
+        "the running Ui holds it"
+    );
+
+    open_settings(&mut rig);
+    let free_meanwhile = Hotkey::register(&other, 9, hotkey_keys(rare(F15))).is_ok();
+    user_did(&mut rig, 2, DialogChange::Clicked);
+
+    assert!(free_meanwhile, "the field needs the keys while the window is open");
+    assert!(
+        matches!(
+            Hotkey::register(&other, 9, hotkey_keys(rare(F15))),
+            Err(HotkeyError::Taken)
+        ),
+        "Cancel takes the shortcut back"
+    );
+}
+
+#[test]
+fn a_shortcut_another_app_holds_is_refused_and_the_old_one_kept() {
+    let mut rig = rig(settings_with_shortcuts(F13, F14), MemoryStore::empty());
+    let other = MessageWindow::create().unwrap();
+    let _held = Hotkey::register(&other, 9, hotkey_keys(rare(F16))).unwrap();
+    let saves_before = rig.store.saved().len();
+    open_settings(&mut rig);
+    dialog(&rig.ui).set_hotkey(301, hotkey_keys(rare(F16)));
+    user_did(&mut rig, 301, DialogChange::Edited);
+
+    user_did(&mut rig, 1, DialogChange::Clicked);
+
+    assert!(rig.ui.settings_window.is_some(), "the window stays open");
+    assert!(
+        dialog(&rig.ui).text(400).contains("already used"),
+        "{}",
+        dialog(&rig.ui).text(400)
+    );
+    assert_eq!(rig.ui.settings.show_hide, rare(F13));
+    assert_eq!(
+        dialog(&rig.ui).hotkey(301),
+        hotkey_keys(rare(F13)),
+        "the field shows the old keys"
+    );
+    assert_eq!(rig.store.saved().len(), saves_before, "nothing was saved");
+}
+
+#[test]
+fn a_taken_shortcut_can_be_replaced_by_a_free_one_on_the_next_ok() {
+    let mut rig = rig(
+        Settings {
+            show_hide: plain(F13),
+            lock_unlock: plain(F14),
+            ..Settings::default()
+        },
+        MemoryStore::empty(),
+    );
+    let other = MessageWindow::create().unwrap();
+    let _held = Hotkey::register(&other, 9, hotkey_keys(plain(F16))).unwrap();
+    open_settings(&mut rig);
+    dialog(&rig.ui).set_hotkey(301, hotkey_keys(plain(F16)));
+    user_did(&mut rig, 301, DialogChange::Edited);
+    user_did(&mut rig, 1, DialogChange::Clicked);
+    dialog(&rig.ui).set_hotkey(301, hotkey_keys(plain(F17)));
+    user_did(&mut rig, 301, DialogChange::Edited);
+
+    user_did(&mut rig, 1, DialogChange::Clicked);
+
+    assert!(rig.ui.settings_window.is_none());
+    assert_eq!(rig.store.saved().last().map(|saved| saved.show_hide), Some(plain(F17)));
+    assert!(
+        matches!(
+            Hotkey::register(&other, 10, hotkey_keys(plain(F17))),
+            Err(HotkeyError::Taken)
+        ),
+        "the new shortcut is registered"
+    );
+    assert!(
+        Hotkey::register(&other, 11, hotkey_keys(plain(F13))).is_ok(),
+        "the old shortcut is free"
+    );
+}
+
+#[test]
+fn unchanged_shortcuts_are_back_after_ok() {
+    let mut rig = rig(settings_with_shortcuts(F18, F19), MemoryStore::empty());
+    let other = MessageWindow::create().unwrap();
+    open_settings(&mut rig);
+
+    user_did(&mut rig, 1, DialogChange::Clicked);
+
+    assert!(
+        matches!(
+            Hotkey::register(&other, 9, hotkey_keys(rare(F18))),
+            Err(HotkeyError::Taken)
+        ),
+        "OK gives the shortcuts back"
+    );
+}
+
+#[test]
+fn turning_on_start_with_windows_creates_the_task_on_ok() {
+    let mut rig = rig(settings_with_rare_shortcuts(true), MemoryStore::empty());
+    open_settings(&mut rig);
+    dialog(&rig.ui).set_checked(303, true);
+    user_did(&mut rig, 303, DialogChange::Clicked);
+    assert_eq!(rig.startup.calls(), Vec::<bool>::new(), "nothing happens before OK");
+
+    user_did(&mut rig, 1, DialogChange::Clicked);
+
+    assert_eq!(rig.startup.calls(), [true]);
+    assert!(rig.ui.settings_window.is_none());
+    assert_eq!(
+        rig.store.saved().last().map(|saved| saved.start_with_windows),
+        Some(true)
+    );
+}
+
+#[test]
+fn leaving_start_with_windows_alone_does_not_touch_the_task() {
+    let mut rig = rig(settings_with_rare_shortcuts(true), MemoryStore::empty());
+    open_settings(&mut rig);
+
+    user_did(&mut rig, 1, DialogChange::Clicked);
+
+    assert_eq!(rig.startup.calls(), Vec::<bool>::new());
+}
+
+#[test]
+fn a_failed_startup_task_keeps_the_window_open_with_the_reason() {
+    let mut rig = rig(settings_with_rare_shortcuts(true), MemoryStore::empty());
+    let failing = FakeStartupTask::failing();
+    rig.ui.startup = Box::new(failing.clone());
+    let saves_before = rig.store.saved().len();
+    open_settings(&mut rig);
+    dialog(&rig.ui).set_checked(303, true);
+    user_did(&mut rig, 303, DialogChange::Clicked);
+
+    user_did(&mut rig, 1, DialogChange::Clicked);
+
+    assert_eq!(failing.calls(), [true]);
+    assert!(rig.ui.settings_window.is_some(), "the window stays open");
+    let shown = dialog(&rig.ui).text(400);
+    assert!(
+        shown.starts_with("Start with Windows: ") && shown.contains("access denied"),
+        "{shown}"
+    );
+    assert!(!dialog(&rig.ui).is_checked(303), "the box goes back to unticked");
+    assert_eq!(rig.store.saved().len(), saves_before, "nothing was saved");
 }

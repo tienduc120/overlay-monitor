@@ -8,6 +8,6 @@ mod shortcuts;
 mod ui;
 
 pub use overlay_view::{OverlayView, needs_redraw, text_style};
-pub use settings_editor::{Change, Colour, Problem, SettingsEditor, ShortcutSlot};
+
 pub use shortcuts::{Shortcuts, hotkey_keys, shortcut_keys};
 pub use ui::{Action, Ui, UiParts, UiState, menu_items, restore_focus_after};

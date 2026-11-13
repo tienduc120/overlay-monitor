@@ -21,6 +21,7 @@ pub mod overlay;
 pub mod pawnio;
 pub mod pdh;
 pub mod placement;
+pub mod shell;
 pub mod snap;
 #[cfg(feature = "test-support")]
 pub mod testing;

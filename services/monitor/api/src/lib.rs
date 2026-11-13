@@ -8,7 +8,7 @@ use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 
 use monitor_application::{
     DriverStatus, GpuPair, GpuSensors, OverlayFrame, Sampler, SamplerControl, Sensor, Sensors, Settings, SettingsStore,
-    StartupTask, load_settings,
+    StartupTask, StartupTaskError, load_settings,
 };
 use monitor_domain::MemoryKind;
 use monitor_infrastructure::{
@@ -102,7 +102,8 @@ pub fn run() -> ExitCode {
     // Task 15 detects the memory; until then the DDR5 layout is the default.
     let settings = load_settings(store.as_ref(), MemoryKind::Ddr5);
     if settings.start_with_windows
-        && let Some(task) = own_startup_task()
+        && let Ok(task) =
+            own_startup_task().inspect_err(|reason| tracing::warn!(reason, "the startup task is not refreshed"))
     {
         refresh_startup_task(&settings, &task);
     }
@@ -147,16 +148,34 @@ pub fn refresh_startup_task(settings: &Settings, task: &dyn StartupTask) {
     }
 }
 
-/// The task for this exe and this user, or `None` when either cannot be named.
-fn own_startup_task() -> Option<SchtasksStartup> {
-    let exe = std::env::current_exe()
-        .inspect_err(|error| tracing::warn!(?error, "the exe is unknown, so the startup task is not refreshed"))
-        .ok()?;
-    let sid = current_user_sid()
-        .inspect_err(|error| tracing::warn!(?error, "the user is unknown, so the startup task is not refreshed"))
-        .ok()?;
-    let work_dir = settings_file().parent()?.to_path_buf();
-    Some(SchtasksStartup::new(TASK_NAME, exe, sid, work_dir))
+/// The task for this exe and this user, or why either cannot be named.
+fn own_startup_task() -> Result<SchtasksStartup, String> {
+    let exe = std::env::current_exe().map_err(|error| format!("the exe is unknown: {error}"))?;
+    let sid = current_user_sid().map_err(|error| format!("the user is unknown: {error}"))?;
+    let work_dir = settings_file()
+        .parent()
+        .map(Path::to_path_buf)
+        .ok_or_else(|| String::from("the settings folder is unknown"))?;
+    Ok(SchtasksStartup::new(TASK_NAME, exe, sid, work_dir))
+}
+
+/// The startup task when this exe or user cannot be named: every change answers why, so the settings window shows it.
+pub struct UnavailableStartup(pub String);
+
+impl StartupTask for UnavailableStartup {
+    fn set(&self, _on: bool) -> Result<(), StartupTaskError> {
+        Err(StartupTaskError(self.0.clone().into()))
+    }
+}
+
+fn startup_task() -> Box<dyn StartupTask> {
+    match own_startup_task() {
+        Ok(task) => Box::new(task),
+        Err(reason) => {
+            tracing::warn!(reason, "start with Windows cannot be changed");
+            Box::new(UnavailableStartup(reason))
+        }
+    }
 }
 
 /// Every GPU adapter Windows lists, or none when the list cannot be had.
@@ -235,6 +254,8 @@ fn show_overlay(
             settings,
             store,
             gpu_names,
+            startup: startup_task(),
+            driver: Box::new(PawnIoProbe),
         },
     );
     let waker = window.waker();

@@ -3,12 +3,13 @@
 
 use std::time::Duration;
 
-use monitor_application::{Field, Line, Settings, StyleSettings};
+use monitor_application::{Field, Line, PawnIoStatus, Settings, ShortcutKeys, StyleSettings};
 use platform_win32::Win32Error;
 use platform_win32::dialog::{DECORATIVE_ID, Dialog, DialogChange, DialogItem, DialogTemplate, FontChoice, ItemKind};
 use platform_win32::ui::MessageWindow;
 
-use crate::settings_editor::{Change, Colour, SettingsEditor};
+use crate::settings_editor::{Change, Colour, SettingsEditor, ShortcutSlot};
+use crate::shortcuts::{hotkey_keys, shortcut_keys};
 
 const OK: u16 = 1;
 const CANCEL: u16 = 2;
@@ -17,8 +18,15 @@ const CHANGE_FONT: u16 = 102;
 const OUTLINE_WIDTH: u16 = 106;
 const OPACITY: u16 = 109;
 const GPU: u16 = 220;
+const SHOW_HIDE_KEYS: u16 = 301;
+const LOCK_UNLOCK_KEYS: u16 = 302;
+const START_WITH_WINDOWS: u16 = 303;
+const DRIVER_STATUS: u16 = 304;
+const INSTALL_DRIVER: u16 = 305;
 const INTERVAL: u16 = 221;
 const PROBLEM: u16 = 400;
+/// `PawnIO`'s own page, where its installer is.
+pub(crate) const PAWNIO_URL: &str = "https://pawnio.eu/";
 const AUTOMATIC_GPU: &str = "Automatic (most video memory)";
 const CHANGE: &str = "Change\u{2026}";
 
@@ -128,6 +136,8 @@ pub(crate) enum WindowOutcome {
     Finished(Settings),
     /// Cancel or close: go back to the settings the window opened with, and close.
     Cancelled(Settings),
+    /// Install…: open `PawnIO`'s page.
+    InstallPawnio,
 }
 
 /// The open settings window; dropping it closes the window.
@@ -143,13 +153,19 @@ impl SettingsWindow {
     ///
     /// # Errors
     /// The dialog could not be created.
-    pub(crate) fn open(window: &MessageWindow, settings: &Settings, gpu_names: &[String]) -> Result<Self, Win32Error> {
+    pub(crate) fn open(
+        window: &MessageWindow,
+        settings: &Settings,
+        gpu_names: &[String],
+        pawnio: &PawnIoStatus,
+    ) -> Result<Self, Win32Error> {
         let opened = Self {
             dialog: Dialog::open(window, &settings_template())?,
             editor: SettingsEditor::new(settings.clone()),
             gpu_names: gpu_names.to_vec(),
         };
         opened.fill(settings);
+        opened.show_driver(pawnio);
         Ok(opened)
     }
 
@@ -184,6 +200,16 @@ impl SettingsWindow {
             .map_or(0, |index| index + 1);
         self.dialog.set_choices(GPU, &choices, selected);
         self.dialog.set_text(INTERVAL, &seconds_text(settings.update_interval));
+        self.dialog.set_hotkey(SHOW_HIDE_KEYS, hotkey_keys(settings.show_hide));
+        self.dialog
+            .set_hotkey(LOCK_UNLOCK_KEYS, hotkey_keys(settings.lock_unlock));
+        self.dialog.set_checked(START_WITH_WINDOWS, settings.start_with_windows);
+    }
+
+    fn show_driver(&self, status: &PawnIoStatus) {
+        self.dialog
+            .set_text(DRIVER_STATUS, &format!("Sensor driver (PawnIO): {}", status.describe()));
+        self.dialog.set_enabled(INSTALL_DRIVER, offers_install(status));
     }
 
     /// Reads the control the user changed and hands it to the editor.
@@ -192,6 +218,8 @@ impl SettingsWindow {
             (OK, DialogChange::Clicked) => return self.finish(),
             (CANCEL, DialogChange::Clicked) => return WindowOutcome::Cancelled(self.editor.original().clone()),
             (CHANGE_FONT, DialogChange::Clicked) => self.choose_font(),
+            (INSTALL_DRIVER, DialogChange::Clicked) => return WindowOutcome::InstallPawnio,
+            (SHOW_HIDE_KEYS | LOCK_UNLOCK_KEYS, DialogChange::Edited) => self.edited_shortcut(control),
             (OUTLINE_WIDTH, DialogChange::Edited) => self.editor.set_outline_width(&self.dialog.text(control)),
             (OPACITY, DialogChange::Edited) => self.editor.set_opacity(&self.dialog.text(control)),
             (INTERVAL, DialogChange::Edited) => self.editor.set_interval(&self.dialog.text(control)),
@@ -251,6 +279,9 @@ impl SettingsWindow {
             return self.choose_colour(row);
         }
         let on = self.dialog.is_checked(control);
+        if control == START_WITH_WINDOWS {
+            return self.editor.set_start_with_windows(on);
+        }
         if let Some(row) = LINE_ROWS.iter().find(|row| row.check == control) {
             self.enable_values(row.line, on);
             return self.editor.set_line_enabled(row.line, on);
@@ -263,6 +294,16 @@ impl SettingsWindow {
             })
     }
 
+    fn edited_shortcut(&mut self, control: u16) -> Change {
+        let slot = if control == SHOW_HIDE_KEYS {
+            ShortcutSlot::ShowHide
+        } else {
+            ShortcutSlot::LockUnlock
+        };
+        self.editor
+            .set_shortcut(slot, shortcut_keys(self.dialog.hotkey(control)))
+    }
+
     fn edited_label(&mut self, control: u16) -> Change {
         LINE_ROWS
             .iter()
@@ -270,6 +311,22 @@ impl SettingsWindow {
             .map_or(Change::Unchanged, |row| {
                 self.editor.set_label(row.line, &self.dialog.text(control))
             })
+    }
+
+    /// Puts `keys` back in a shortcut's field and in the editor, after the shortcut could not be registered.
+    pub(crate) fn restore_shortcut(&mut self, slot: ShortcutSlot, keys: ShortcutKeys) {
+        let field = match slot {
+            ShortcutSlot::ShowHide => SHOW_HIDE_KEYS,
+            ShortcutSlot::LockUnlock => LOCK_UNLOCK_KEYS,
+        };
+        self.dialog.set_hotkey(field, hotkey_keys(keys));
+        self.editor.set_shortcut(slot, keys);
+    }
+
+    /// Puts the check box and the editor back to `on`, after the start with Windows could not be changed.
+    pub(crate) fn restore_start_with_windows(&mut self, on: bool) {
+        self.dialog.set_checked(START_WITH_WINDOWS, on);
+        self.editor.set_start_with_windows(on);
     }
 
     fn choose_gpu(&mut self) -> Change {
@@ -323,6 +380,15 @@ const fn colour_of(style: &StyleSettings, which: Colour) -> u32 {
     }
 }
 
+/// Whether the window offers the Install… button: `PawnIO` is missing, too old, or did not answer. When it is there
+/// but needs admin, installing again would not help.
+pub(crate) const fn offers_install(status: &PawnIoStatus) -> bool {
+    matches!(
+        status,
+        PawnIoStatus::NotInstalled | PawnIoStatus::TooOld { .. } | PawnIoStatus::Unanswered { .. }
+    )
+}
+
 /// The font as the window names it: "Consolas Bold, 14 pt".
 pub(crate) fn font_text(style: &StyleSettings) -> String {
     let mut name = style.font_family.clone();
@@ -345,11 +411,15 @@ pub(crate) fn seconds_text(interval: Duration) -> String {
 }
 
 /// `edited`, but shown or hidden, locked or not, and placed as the overlay is now: those change outside the window
-/// while it is open, and the window must not undo them.
+/// while it is open, and the window must not undo them. The shortcuts and the start with Windows are not previews: they
+/// take effect on OK, once Windows has accepted them.
 pub(crate) fn keep_live_view_state(edited: Settings, live: &Settings) -> Settings {
     Settings {
         visible: live.visible,
         locked: live.locked,
+        show_hide: live.show_hide,
+        lock_unlock: live.lock_unlock,
+        start_with_windows: live.start_with_windows,
         position: live.position.clone(),
         ..edited
     }
@@ -386,7 +456,7 @@ const READINGS_TOP: i16 = STYLE_TOP + STYLE_HEIGHT + 4;
 const READINGS_HEIGHT: i16 = 116;
 const GENERAL_TOP: i16 = READINGS_TOP + READINGS_HEIGHT + 4;
 /// Room for the shortcuts, start with Windows, and the sensor driver's state.
-const GENERAL_HEIGHT: i16 = 76;
+const GENERAL_HEIGHT: i16 = 78;
 const PROBLEM_TOP: i16 = GENERAL_TOP + GENERAL_HEIGHT + 6;
 const BUTTONS_TOP: i16 = PROBLEM_TOP + 16;
 const DIALOG_HEIGHT: i16 = BUTTONS_TOP + BUTTON_HEIGHT + MARGIN;
@@ -395,12 +465,7 @@ const DIALOG_HEIGHT: i16 = BUTTONS_TOP + BUTTON_HEIGHT + MARGIN;
 pub(crate) fn settings_template() -> DialogTemplate {
     let mut items = style_items();
     items.extend(readings_items());
-    items.push(item(
-        DECORATIVE_ID,
-        ItemKind::GroupBox,
-        "General",
-        (MARGIN, GENERAL_TOP, GROUP_WIDTH, GENERAL_HEIGHT),
-    ));
+    items.extend(general_items());
     items.push(item(
         PROBLEM,
         ItemKind::Label,
@@ -427,6 +492,47 @@ pub(crate) fn settings_template() -> DialogTemplate {
         height: DIALOG_HEIGHT,
         items,
     }
+}
+
+/// The two shortcuts, start with Windows, and the sensor driver's state with its Install… button.
+fn general_items() -> Vec<DialogItem> {
+    const FIELD_LEFT: i16 = INSIDE_LEFT + 52;
+    let [show_hide, lock_unlock, start, driver] = [12, 28, 44, 60].map(|offset: i16| GENERAL_TOP + offset);
+    vec![
+        item(
+            DECORATIVE_ID,
+            ItemKind::GroupBox,
+            "General",
+            (MARGIN, GENERAL_TOP, GROUP_WIDTH, GENERAL_HEIGHT),
+        ),
+        label("Show/hide", (INSIDE_LEFT, show_hide + 2, 50, 8)),
+        item(SHOW_HIDE_KEYS, ItemKind::HotKey, "", (FIELD_LEFT, show_hide, 110, 12)),
+        label("Lock/unlock", (INSIDE_LEFT, lock_unlock + 2, 50, 8)),
+        item(
+            LOCK_UNLOCK_KEYS,
+            ItemKind::HotKey,
+            "",
+            (FIELD_LEFT, lock_unlock, 110, 12),
+        ),
+        item(
+            START_WITH_WINDOWS,
+            ItemKind::CheckBox,
+            "Start with Windows",
+            (INSIDE_LEFT, start, 120, 10),
+        ),
+        item(
+            DRIVER_STATUS,
+            ItemKind::Label,
+            "",
+            (INSIDE_LEFT, driver, INSIDE_RIGHT - BUTTON_WIDTH - 6 - INSIDE_LEFT, 16),
+        ),
+        item(
+            INSTALL_DRIVER,
+            ItemKind::Button,
+            "Install\u{2026}",
+            (INSIDE_RIGHT - BUTTON_WIDTH, driver, BUTTON_WIDTH, BUTTON_HEIGHT),
+        ),
+    ]
 }
 
 /// The font and the three colours, each row ending in its Change… button.

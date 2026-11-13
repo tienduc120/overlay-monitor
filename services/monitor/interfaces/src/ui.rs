@@ -4,16 +4,20 @@ use std::sync::mpsc::{Receiver, Sender};
 use std::time::{Duration, Instant};
 
 use monitor_application::{
-    OverlayFrame, OverlayStyle, SamplerControl, Settings, SettingsStore, blank_frame, overlay_style,
+    DriverStatus, OverlayFrame, OverlayStyle, SamplerControl, Settings, SettingsStore, StartupTask, blank_frame,
+    overlay_style,
 };
 use platform_win32::dialog::DialogChange;
 use platform_win32::foreground::ForegroundWindow;
 use platform_win32::menu::{MenuItem, show_popup_menu};
+use platform_win32::shell::open_url;
 use platform_win32::tray::TrayIcon;
 use platform_win32::ui::{Flow, MessageWindow, UiEvent};
 
 use crate::OverlayView;
-use crate::settings_window::{SettingsWindow, WindowOutcome, keep_live_view_state};
+use crate::settings_editor::ShortcutSlot;
+use crate::settings_window::{PAWNIO_URL, SettingsWindow, WindowOutcome, keep_live_view_state};
+use crate::shortcuts::ShortcutTaken;
 use crate::shortcuts::{LOCK_HOTKEY, SHOW_HIDE_HOTKEY, Shortcuts};
 
 const SHOW_OVERLAY: u16 = 1;
@@ -159,6 +163,10 @@ pub struct UiParts {
     pub store: Box<dyn SettingsStore>,
     /// The GPU adapters the settings window offers, in the order Windows lists them.
     pub gpu_names: Vec<String>,
+    /// Creates or removes the start with Windows.
+    pub startup: Box<dyn StartupTask>,
+    /// Says whether `PawnIO` is installed, each time the settings window opens.
+    pub driver: Box<dyn DriverStatus>,
 }
 
 /// The UI thread's state: the overlay, the tray icon, the sampler's frames, and the settings.
@@ -170,8 +178,8 @@ pub struct Ui {
     frames: Receiver<OverlayFrame>,
     /// Carries settings changes to the sampler; dropping the `Ui` drops it, which tells the sampler to stop.
     sampler: Sender<SamplerControl>,
-    /// Held so the shortcuts stay registered until the `Ui` is dropped.
-    _shortcuts: Shortcuts,
+    /// Held so the shortcuts stay registered until the `Ui` is dropped; the settings window lets them rest meanwhile.
+    shortcuts: Shortcuts,
     settings: Settings,
     store: Box<dyn SettingsStore>,
     style: OverlayStyle,
@@ -182,6 +190,8 @@ pub struct Ui {
     draw_errors: ErrorLog,
     tray_errors: ErrorLog,
     gpu_names: Vec<String>,
+    startup: Box<dyn StartupTask>,
+    driver: Box<dyn DriverStatus>,
     settings_window: Option<SettingsWindow>,
 }
 
@@ -197,6 +207,8 @@ impl Ui {
             mut settings,
             store,
             gpu_names,
+            startup,
+            driver,
         } = parts;
         let shortcuts = Shortcuts::register(window, &settings);
         // A locked overlay can only be unlocked from the tray menu or by its shortcut; without the shortcut it starts
@@ -222,7 +234,7 @@ impl Ui {
             view,
             frames,
             sampler,
-            _shortcuts: shortcuts,
+            shortcuts,
             style: overlay_style(&settings),
             settings,
             store,
@@ -231,6 +243,8 @@ impl Ui {
             draw_errors: ErrorLog::default(),
             tray_errors: ErrorLog::default(),
             gpu_names,
+            startup,
+            driver,
             settings_window: None,
         };
         if lock_dropped {
@@ -342,8 +356,13 @@ impl Ui {
             open.bring_to_front();
             return;
         }
-        match SettingsWindow::open(window, &self.settings, &self.gpu_names) {
-            Ok(opened) => self.settings_window = Some(opened),
+        let driver = self.driver.pawnio();
+        match SettingsWindow::open(window, &self.settings, &self.gpu_names, &driver) {
+            Ok(opened) => {
+                // The shortcut fields can only capture a combination nobody holds, this app included.
+                self.shortcuts.suspend();
+                self.settings_window = Some(opened);
+            }
             Err(error) => tracing::warn!(?error, "the settings window could not be opened"),
         }
     }
@@ -357,16 +376,71 @@ impl Ui {
         match open.on_event(control, change) {
             WindowOutcome::Nothing => {}
             WindowOutcome::Preview(edited) => self.follow(window, edited),
-            WindowOutcome::Finished(edited) => {
-                self.settings_window = None;
-                self.follow(window, edited);
-                self.save_settings();
-            }
+            WindowOutcome::Finished(edited) => self.finish_settings(window, &edited),
             WindowOutcome::Cancelled(original) => {
                 self.settings_window = None;
+                self.restore_shortcuts(window);
                 self.follow(window, original);
             }
+            WindowOutcome::InstallPawnio => {
+                if let Err(error) = open_url(PAWNIO_URL) {
+                    tracing::warn!(?error, "the PawnIO page could not be opened");
+                }
+            }
         }
+    }
+
+    /// OK: the shortcuts and the start with Windows must be accepted before the window closes and the settings are
+    /// kept. A refusal is shown in the window, which stays open with the old value back in place.
+    fn finish_settings(&mut self, window: &MessageWindow, edited: &Settings) {
+        let Some(original) = self.settings_window.as_ref().map(|open| open.original().clone()) else {
+            return;
+        };
+        let shortcuts_changed = edited.show_hide != original.show_hide || edited.lock_unlock != original.lock_unlock;
+        if shortcuts_changed && let Err(taken) = self.shortcuts.replace(window, edited) {
+            self.refuse_shortcut(taken, &original);
+            return;
+        }
+        if edited.start_with_windows != original.start_with_windows
+            && let Err(error) = self.startup.set(edited.start_with_windows)
+        {
+            // The window stays open, so the shortcuts rest again.
+            self.shortcuts.suspend();
+            if let Some(open) = self.settings_window.as_mut() {
+                open.restore_start_with_windows(original.start_with_windows);
+                open.show_problem(&format!("Start with Windows: {}", error.0));
+            }
+            return;
+        }
+        self.settings_window = None;
+        if !shortcuts_changed {
+            self.restore_shortcuts(window);
+        }
+        self.settings.show_hide = edited.show_hide;
+        self.settings.lock_unlock = edited.lock_unlock;
+        self.settings.start_with_windows = edited.start_with_windows;
+        self.follow(window, edited.clone());
+        self.save_settings();
+    }
+
+    fn refuse_shortcut(&mut self, taken: ShortcutTaken, original: &Settings) {
+        let old = match taken.slot {
+            ShortcutSlot::ShowHide => original.show_hide,
+            ShortcutSlot::LockUnlock => original.lock_unlock,
+        };
+        if let Some(open) = self.settings_window.as_mut() {
+            open.restore_shortcut(taken.slot, old);
+            open.show_problem(&format!(
+                "{} is already used by another app; keeping {old}.",
+                taken.keys
+            ));
+        }
+    }
+
+    /// Registers the shortcuts the settings name, once nothing holds them.
+    fn restore_shortcuts(&mut self, window: &MessageWindow) {
+        self.shortcuts.suspend();
+        self.shortcuts = Shortcuts::register(window, &self.settings);
     }
 
     /// Draws, samples, and checks for a stall by `settings`, keeping the overlay where and as it is now.

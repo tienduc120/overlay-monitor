@@ -13,21 +13,21 @@ const MAX_OUTLINE_PX: u8 = 8;
 const MAX_OPACITY_PERCENT: u8 = 100;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Colour {
+pub(crate) enum Colour {
     Text,
     Outline,
     Background,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub enum ShortcutSlot {
+pub(crate) enum ShortcutSlot {
     ShowHide,
     LockUnlock,
 }
 
 /// Why a field's text or choice cannot be used; the `Display` text is what the window shows.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Problem {
+pub(crate) enum Problem {
     Interval,
     OutlineWidth,
     Opacity,
@@ -51,7 +51,7 @@ impl fmt::Display for Problem {
 
 /// What an edit did: the overlay should redraw, nothing moved, or the edit was refused.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Change {
+pub(crate) enum Change {
     Preview,
     Unchanged,
     Invalid(Problem),
@@ -68,7 +68,7 @@ enum Spot {
 }
 
 #[derive(Debug)]
-pub struct SettingsEditor {
+pub(crate) struct SettingsEditor {
     original: Settings,
     edited: Settings,
     problems: BTreeMap<Spot, Problem>,
@@ -98,7 +98,7 @@ fn store<T: PartialEq>(target: &mut T, value: T) -> Change {
 }
 
 impl SettingsEditor {
-    pub fn new(current: Settings) -> Self {
+    pub(crate) fn new(current: Settings) -> Self {
         Self {
             original: current.clone(),
             edited: current,
@@ -106,11 +106,11 @@ impl SettingsEditor {
         }
     }
 
-    pub const fn edited(&self) -> &Settings {
+    pub(crate) const fn edited(&self) -> &Settings {
         &self.edited
     }
 
-    pub const fn original(&self) -> &Settings {
+    pub(crate) const fn original(&self) -> &Settings {
         &self.original
     }
 
@@ -118,7 +118,7 @@ impl SettingsEditor {
     ///
     /// # Errors
     /// The first field that holds an unfixed problem.
-    pub fn finish(&self) -> Result<Settings, Problem> {
+    pub(crate) fn finish(&self) -> Result<Settings, Problem> {
         self.problems
             .values()
             .next()
@@ -141,7 +141,7 @@ impl SettingsEditor {
         store(pick(&mut self.edited), value)
     }
 
-    pub fn set_font(&mut self, font: &FontChoice) -> Change {
+    pub(crate) fn set_font(&mut self, font: &FontChoice) -> Change {
         let style = &mut self.edited.style;
         if style.font_family == font.family
             && style.size_pt.to_bits() == font.size_pt.to_bits()
@@ -157,7 +157,7 @@ impl SettingsEditor {
         Change::Preview
     }
 
-    pub fn set_colour(&mut self, which: Colour, rgb: u32) -> Change {
+    pub(crate) fn set_colour(&mut self, which: Colour, rgb: u32) -> Change {
         let style = &mut self.edited.style;
         store(
             match which {
@@ -169,27 +169,27 @@ impl SettingsEditor {
         )
     }
 
-    pub fn set_outline_width(&mut self, text: &str) -> Change {
+    pub(crate) fn set_outline_width(&mut self, text: &str) -> Change {
         let px = whole(text, MAX_OUTLINE_PX).map(f32::from);
         self.settle(Spot::OutlineWidth, Problem::OutlineWidth, px, |s| {
             &mut s.style.outline_px
         })
     }
 
-    pub fn set_opacity(&mut self, text: &str) -> Change {
+    pub(crate) fn set_opacity(&mut self, text: &str) -> Change {
         let percent = whole(text, MAX_OPACITY_PERCENT);
         self.settle(Spot::Opacity, Problem::Opacity, percent, |s| {
             &mut s.style.background_opacity_percent
         })
     }
 
-    pub fn set_interval(&mut self, text: &str) -> Change {
+    pub(crate) fn set_interval(&mut self, text: &str) -> Change {
         self.settle(Spot::Interval, Problem::Interval, seconds(text), |s| {
             &mut s.update_interval
         })
     }
 
-    pub fn set_line_enabled(&mut self, line: Line, on: bool) -> Change {
+    pub(crate) fn set_line_enabled(&mut self, line: Line, on: bool) -> Change {
         self.edited
             .lines
             .iter_mut()
@@ -198,7 +198,7 @@ impl SettingsEditor {
     }
 
     /// Ticks or unticks one value of a line; `fields` stays in the line's display order.
-    pub fn set_field(&mut self, line: Line, field: Field, on: bool) -> Change {
+    pub(crate) fn set_field(&mut self, line: Line, field: Field, on: bool) -> Change {
         if !line_fields(line).contains(&field) {
             return Change::Unchanged;
         }
@@ -213,7 +213,7 @@ impl SettingsEditor {
         store(&mut settings.fields, fields)
     }
 
-    pub fn set_label(&mut self, line: Line, text: &str) -> Change {
+    pub(crate) fn set_label(&mut self, line: Line, text: &str) -> Change {
         let spot = Spot::Label(line);
         if text.trim().is_empty() {
             self.problems.insert(spot, Problem::EmptyLabel);
@@ -228,11 +228,11 @@ impl SettingsEditor {
     }
 
     /// `None` is automatic.
-    pub fn set_gpu(&mut self, name: Option<String>) -> Change {
+    pub(crate) fn set_gpu(&mut self, name: Option<String>) -> Change {
         store(&mut self.edited.gpu, name)
     }
 
-    pub fn set_shortcut(&mut self, slot: ShortcutSlot, keys: ShortcutKeys) -> Change {
+    pub(crate) fn set_shortcut(&mut self, slot: ShortcutSlot, keys: ShortcutKeys) -> Change {
         let place = Spot::Shortcut(slot);
         let other = match slot {
             ShortcutSlot::ShowHide => self.edited.lock_unlock,
@@ -259,7 +259,7 @@ impl SettingsEditor {
         )
     }
 
-    pub fn set_start_with_windows(&mut self, on: bool) -> Change {
+    pub(crate) fn set_start_with_windows(&mut self, on: bool) -> Change {
         store(&mut self.edited.start_with_windows, on)
     }
 }

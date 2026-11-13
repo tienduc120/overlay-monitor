@@ -6,8 +6,8 @@ use std::rc::Rc;
 use std::sync::{Arc, Mutex, PoisonError};
 
 use crate::{
-    Extras, GpuPair, GpuSensors, LoadSettingsError, ReadError, SaveSettingsError, Sensor, Settings, SettingsStore,
-    StartupTask, StartupTaskError,
+    DriverStatus, Extras, GpuPair, GpuSensors, LoadSettingsError, PawnIoStatus, ReadError, SaveSettingsError, Sensor,
+    Settings, SettingsStore, StartupTask, StartupTaskError,
 };
 
 /// Answers in order, then keeps repeating the last answer.
@@ -194,5 +194,15 @@ impl StartupTask for FakeStartupTask {
             return Err(StartupTaskError("access denied".into()));
         }
         Ok(())
+    }
+}
+
+/// A driver that always answers the one status it was given.
+#[derive(Clone, Debug)]
+pub struct FakeDriverStatus(pub PawnIoStatus);
+
+impl DriverStatus for FakeDriverStatus {
+    fn pawnio(&self) -> PawnIoStatus {
+        self.0.clone()
     }
 }
