@@ -1,3 +1,4 @@
+use crate::icon::Icon;
 use crate::tray::TrayIcon;
 use crate::ui::MessageWindow;
 
@@ -5,7 +6,8 @@ use crate::ui::MessageWindow;
 fn the_icon_can_be_added_added_again_and_removed() {
     let window = MessageWindow::create().unwrap();
 
-    let icon = TrayIcon::add(&window, "Overlay Monitor test").unwrap();
+    let image = Icon::stock().unwrap();
+    let icon = TrayIcon::add(&window, "Overlay Monitor test", &image).unwrap();
     let again = icon.readd();
     drop(icon);
 

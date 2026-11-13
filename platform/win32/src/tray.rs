@@ -7,9 +7,10 @@ use windows::Win32::UI::Shell::{
     NIF_ICON, NIF_MESSAGE, NIF_SHOWTIP, NIF_TIP, NIM_ADD, NIM_DELETE, NIM_SETVERSION, NOTIFYICON_VERSION_4,
     NOTIFYICONDATAW, Shell_NotifyIconW,
 };
-use windows::Win32::UI::WindowsAndMessaging::{IDI_APPLICATION, LoadIconW};
+use windows::Win32::UI::WindowsAndMessaging::HICON;
 
 use crate::Win32Error;
+use crate::icon::Icon;
 use crate::ui::{MessageWindow, TRAY_CALLBACK};
 
 /// The one icon this process has; the shell tells icons of a window apart by this number.
@@ -20,20 +21,23 @@ const ICON_ID: u32 = 1;
 pub struct TrayIcon {
     window: HWND,
     tooltip: String,
+    /// Borrowed from the [`Icon`] the caller keeps, which must outlive this.
+    icon: HICON,
 }
 
 impl TrayIcon {
-    /// Adds the icon, with the stock application icon until the app draws its own.
+    /// Adds the icon showing `icon`, which must outlive the tray icon: `readd` needs the handle again.
     ///
     /// # Errors
     /// The shell refused the icon.
-    pub fn add(window: &MessageWindow, tooltip: &str) -> Result<Self, Win32Error> {
-        let icon = Self {
+    pub fn add(window: &MessageWindow, tooltip: &str, icon: &Icon) -> Result<Self, Win32Error> {
+        let tray = Self {
             window: window.handle(),
             tooltip: tooltip.to_owned(),
+            icon: icon.handle(),
         };
-        icon.register()?;
-        Ok(icon)
+        tray.register()?;
+        Ok(tray)
     }
 
     /// Adds the icon again, after Explorer restarted and dropped it.
@@ -62,9 +66,7 @@ impl TrayIcon {
             uCallbackMessage: TRAY_CALLBACK,
             ..NOTIFYICONDATAW::default()
         };
-        // SAFETY: no module asks for a stock icon, which the system owns and never frees. Without one the icon is
-        // blank, which still works.
-        data.hIcon = unsafe { LoadIconW(None, IDI_APPLICATION) }.unwrap_or_default();
+        data.hIcon = self.icon;
         // The tip holds 127 units and a NUL; a longer text is cut, and the array is zeroed, so it stays terminated.
         for (slot, unit) in data.szTip.iter_mut().take(127).zip(self.tooltip.encode_utf16()) {
             *slot = unit;

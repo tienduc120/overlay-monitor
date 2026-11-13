@@ -2,7 +2,7 @@ use windows::Win32::UI::HiDpi::{
     AreDpiAwarenessContextsEqual, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, GetThreadDpiAwarenessContext,
 };
 
-use super::{dips_from_points, enable_per_monitor_awareness, pixels_from_dips};
+use super::{dips_from_points, enable_per_monitor_awareness, pixels_from_dips, small_icon_size};
 
 #[test]
 fn fourteen_points_is_about_18_7_dips_and_scales_with_dpi() {
@@ -23,4 +23,13 @@ fn once_enabled_the_process_sees_each_monitor_in_its_own_pixels() {
     };
 
     assert!(per_monitor.as_bool(), "the UI thread must run per-monitor aware (v2)");
+}
+
+#[test]
+fn a_small_icon_is_at_least_16_pixels_at_any_dpi() {
+    assert!(
+        small_icon_size() >= 16,
+        "the tray needs a real size: {}",
+        small_icon_size()
+    );
 }

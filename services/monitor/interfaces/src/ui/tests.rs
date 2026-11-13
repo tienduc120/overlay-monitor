@@ -1,6 +1,7 @@
 use std::sync::mpsc::{TryRecvError, channel};
 
 use monitor_application::{OverlayFrame, default_style};
+use platform_win32::icon::Icon;
 use platform_win32::overlay::OverlayWindow;
 use platform_win32::tray::TrayIcon;
 use platform_win32::ui::{Flow, MessageWindow, UiEvent};
@@ -102,7 +103,8 @@ fn a_different_failure_is_new_and_so_is_one_after_a_success() {
 fn frames_that_arrive_while_the_overlay_is_hidden_are_kept_only_as_the_newest() {
     let window = MessageWindow::create().unwrap();
     let overlay = OverlayWindow::create(window.sink()).unwrap();
-    let tray = TrayIcon::add(&window, "Overlay Monitor test").unwrap();
+    let image = Icon::stock().unwrap();
+    let tray = TrayIcon::add(&window, "Overlay Monitor test", &image).unwrap();
     let (frames, received) = channel();
     let mut ui = Ui::new(OverlayView::new(overlay), tray, received, default_style());
     for n in 0..5 {

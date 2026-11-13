@@ -14,9 +14,10 @@ use monitor_infrastructure::{
 use monitor_interfaces::{OverlayView, Ui};
 use platform_clock::{Clock, SystemClock};
 use platform_win32::Win32Error;
-use platform_win32::dpi::enable_per_monitor_awareness;
+use platform_win32::dpi::{enable_per_monitor_awareness, small_icon_size};
 use platform_win32::etw::{TraceConsumer, TraceSession, start_session};
 use platform_win32::gpu::gpu_adapters;
+use platform_win32::icon::Icon;
 use platform_win32::instance::SingleInstance;
 use platform_win32::overlay::OverlayWindow;
 use platform_win32::tray::TrayIcon;
@@ -28,6 +29,8 @@ use tracing_subscriber::filter::LevelFilter;
 const INSTANCE_NAME: &str = r"Local\OverlayMonitor";
 const TRACE_SESSION: &str = "OverlayMonitor";
 const TOOLTIP: &str = "Overlay Monitor";
+/// The owner's icon, in the file's several sizes.
+const OWNER_ICON: &[u8] = include_bytes!("../assets/icon.ico");
 const FPS_NEEDS_ADMIN: &str = "frame counting needs admin or the Performance Log Users group";
 const NO_GPU: &str = "no GPU adapter was found";
 
@@ -157,7 +160,8 @@ fn show_overlay(
 ) -> Result<(), OpenError> {
     let window = MessageWindow::create().map_err(OpenError::MessageWindow)?;
     let overlay = OverlayWindow::create(window.sink()).map_err(OpenError::OverlayWindow)?;
-    let tray = TrayIcon::add(&window, TOOLTIP).map_err(OpenError::TrayIcon)?;
+    let icon = tray_icon_image().map_err(OpenError::TrayIcon)?;
+    let tray = TrayIcon::add(&window, TOOLTIP, &icon).map_err(OpenError::TrayIcon)?;
     let (frames, received) = mpsc::channel();
     let view = OverlayView::new(overlay);
     view.show();
@@ -180,10 +184,17 @@ fn show_overlay(
             tracing::warn!(?error, "stop the frame trace");
         }
     });
-    // The tray icon, which `ui` holds, goes before the window the shell knows it by.
+    // The tray icon, which `ui` holds, goes before the window the shell knows it by; the image it shows drops last.
     drop(ui);
     drop(window);
     Ok(())
+}
+
+/// The owner's icon at the tray's size, or the stock one when it cannot be made.
+fn tray_icon_image() -> Result<Icon, Win32Error> {
+    Icon::from_ico(OWNER_ICON, small_icon_size())
+        .inspect_err(|error| tracing::warn!(?error, "use the stock tray icon, as the owner's could not be made"))
+        .or_else(|_| Icon::stock())
 }
 
 /// Sends a frame and wakes the UI to draw it once an interval, until `stop` gets a message or its sender is gone.
