@@ -37,13 +37,11 @@ impl GlobalMutex {
         if waited == WAIT_OBJECT_0 || waited == WAIT_ABANDONED {
             return Ok(Some(GlobalMutexGuard { handle }));
         }
+        // Read the thread's last error before CloseHandle can overwrite it.
+        let failure = (waited != WAIT_TIMEOUT).then(Win32Error::from_thread);
         // SAFETY: the handle is ours and is not used again.
         unsafe { CloseHandle(handle) }.ok();
-        if waited == WAIT_TIMEOUT {
-            Ok(None)
-        } else {
-            Err(Win32Error::from_thread())
-        }
+        failure.map_or(Ok(None), Err)
     }
 }
 

@@ -53,7 +53,12 @@ pub(crate) fn load_module(modules_dir: &Path, file: &str) -> Result<PawnModule, 
             }))
         }
     })?;
-    PawnModule::load(&blob).map_err(|source| match source {
+    PawnModule::load(&blob).map_err(|source| open_failure(source, file))
+}
+
+/// What the machine lacks is `Unavailable` for good; anything else is a failure with its cause kept.
+fn open_failure(source: PawnError, file: &str) -> ReadError {
+    match source {
         PawnError::NotInstalled | PawnError::AccessDenied | PawnError::NotSupported => {
             ReadError::Unavailable(source.to_string())
         }
@@ -61,7 +66,7 @@ pub(crate) fn load_module(modules_dir: &Path, file: &str) -> Result<PawnModule, 
             file: file.to_owned(),
             source,
         })),
-    })
+    }
 }
 
 /// Runs `body` while holding the system mutex `name`; a lock that is not free in time is a failed read.
@@ -107,3 +112,6 @@ pub(crate) fn call_one(module: &PawnModule, function: &'static str, input: &[u64
 pub(crate) fn narrow<T: TryFrom<u64>>(function: &'static str, value: u64) -> Result<T, ReadError> {
     T::try_from(value).map_err(|_wide| ReadError::Failed(Box::new(CallError::TooWide { function, value })))
 }
+
+#[cfg(test)]
+mod tests;

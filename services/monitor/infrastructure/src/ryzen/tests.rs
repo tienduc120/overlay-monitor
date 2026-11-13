@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use monitor_application::Sensor;
+use monitor_application::{ReadError, Sensor};
 
 use super::{RyzenTemperature, tctl_celsius};
 
@@ -25,4 +25,14 @@ fn modules() -> PathBuf {
 fn the_ryzen_temperature_reads_a_plausible_value() {
     let t = RyzenTemperature::open(&modules()).unwrap().read().unwrap();
     assert!((15.0..=100.0).contains(&t), "{t}");
+}
+
+#[test]
+fn a_missing_module_file_is_unavailable_and_says_how_to_get_it() {
+    let reply = RyzenTemperature::open(Path::new("no-such-dir"));
+
+    assert!(
+        matches!(reply, Err(ReadError::Unavailable(ref why)) if why.contains("cargo xtask modules")),
+        "{reply:?}"
+    );
 }

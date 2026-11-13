@@ -19,42 +19,52 @@ const REG_DEVICE_TYPE: u64 = 0x00;
 const REG_DEVICE_REVISION: u64 = 0x01;
 const REG_TEMPERATURE: u64 = 0x31;
 
-/// The hottest `DDR5` module's temperature in degrees Celsius.
-pub struct Ddr5Temperature {
-    module: PawnModule,
-    hubs: Vec<u8>,
+/// One `SMBus` read: what the sensor needs from the bus, so its scan and lock logic runs without hardware.
+pub(crate) trait SmbusRead {
+    fn read(&self, address: u8, register: u64, protocol: u64) -> Result<u64, ReadError>;
 }
 
-impl Ddr5Temperature {
-    /// Loads the module and finds every `SPD5118` hub.
-    ///
-    /// # Errors
-    /// `Unavailable` when the module file, `PawnIO`, elevation, a supported chipset, or any hub is missing; `Failed`
-    /// otherwise.
-    pub fn open(modules_dir: &Path) -> Result<Self, ReadError> {
-        let module = load_module(modules_dir, MODULE)?;
-        let hubs = with_lock(SMBUS_LOCK, || Ok(scan_hubs(&module)))?;
-        if hubs.is_empty() {
-            return Err(ReadError::Unavailable("no DDR5 SPD hub found".to_owned()));
-        }
-        Ok(Self { module, hubs })
+impl SmbusRead for PawnModule {
+    fn read(&self, address: u8, register: u64, protocol: u64) -> Result<u64, ReadError> {
+        call_one(
+            self,
+            "ioctl_smbus_xfer",
+            &[u64::from(address), READ, register, protocol],
+        )
     }
 }
 
-impl std::fmt::Debug for Ddr5Temperature {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Ddr5Temperature")
-            .field("hubs", &self.hubs)
-            .finish_non_exhaustive()
-    }
+/// Where the hub scan stands: `None` until a scan completes, then the hubs it found (possibly none).
+pub(crate) struct HubReader<B> {
+    bus: B,
+    lock: &'static str,
+    hubs: Option<Vec<u8>>,
 }
 
-impl Sensor for Ddr5Temperature {
-    fn read(&mut self) -> Result<f64, ReadError> {
-        with_lock(SMBUS_LOCK, || {
+#[derive(Debug, thiserror::Error)]
+#[error("no SMBus address answered during the hub scan")]
+struct ScanError(#[source] ReadError);
+
+impl<B: SmbusRead> HubReader<B> {
+    pub(crate) fn new(bus: B, lock: &'static str) -> Self {
+        Self { bus, lock, hubs: None }
+    }
+
+    /// Scans on the first read, under the bus lock. A lock that is busy or a bus that errors fails this read and
+    /// leaves the scan for the next one; only a completed scan settles that there is no hub.
+    pub(crate) fn read(&mut self) -> Result<f64, ReadError> {
+        let Self { bus, lock, hubs } = self;
+        with_lock(lock, || {
+            if hubs.is_none() {
+                *hubs = Some(scan_hubs(bus)?);
+            }
+            let known = hubs.as_deref().unwrap_or_default();
+            if known.is_empty() {
+                return Err(ReadError::Unavailable("no DDR5 SPD hub found".to_owned()));
+            }
             let mut hottest = f64::NEG_INFINITY;
-            for &address in &self.hubs {
-                let raw = xfer(&self.module, address, REG_TEMPERATURE, PROTOCOL_WORD)?;
+            for &address in known {
+                let raw = bus.read(address, REG_TEMPERATURE, PROTOCOL_WORD)?;
                 hottest = hottest.max(celsius(narrow("ioctl_smbus_xfer", raw)?));
             }
             Ok(hottest)
@@ -62,29 +72,62 @@ impl Sensor for Ddr5Temperature {
     }
 }
 
-/// A slot with no module does not answer, which is not an error while scanning.
-fn scan_hubs(module: &PawnModule) -> Vec<u8> {
-    SLOT_ADDRESSES
-        .filter(|&address| {
-            let mr0 = xfer(module, address, REG_DEVICE_TYPE, PROTOCOL_BYTE);
-            let mr1 = xfer(module, address, REG_DEVICE_REVISION, PROTOCOL_BYTE);
-            match (
-                mr0.and_then(|v| narrow("ioctl_smbus_xfer", v)),
-                mr1.and_then(|v| narrow("ioctl_smbus_xfer", v)),
-            ) {
-                (Ok(mr0), Ok(mr1)) => is_hub(mr0, mr1),
-                _ => false,
+/// An empty slot does not answer, so one failed address is normal; a scan where nothing answered is not.
+fn scan_hubs<B: SmbusRead>(bus: &B) -> Result<Vec<u8>, ReadError> {
+    let mut hubs = Vec::new();
+    let mut last_error = None;
+    let mut answered = false;
+    for address in SLOT_ADDRESSES {
+        let ids = bus
+            .read(address, REG_DEVICE_TYPE, PROTOCOL_BYTE)
+            .and_then(|mr0| Ok((mr0, bus.read(address, REG_DEVICE_REVISION, PROTOCOL_BYTE)?)))
+            .and_then(|(mr0, mr1)| Ok((narrow("ioctl_smbus_xfer", mr0)?, narrow("ioctl_smbus_xfer", mr1)?)));
+        match ids {
+            Ok((mr0, mr1)) => {
+                answered = true;
+                if is_hub(mr0, mr1) {
+                    hubs.push(address);
+                }
             }
-        })
-        .collect()
+            Err(error) => last_error = Some(error),
+        }
+    }
+    match last_error {
+        Some(error) if !answered => Err(ReadError::Failed(Box::new(ScanError(error)))),
+        Some(_) | None => Ok(hubs),
+    }
 }
 
-fn xfer(module: &PawnModule, address: u8, register: u64, protocol: u64) -> Result<u64, ReadError> {
-    call_one(
-        module,
-        "ioctl_smbus_xfer",
-        &[u64::from(address), READ, register, protocol],
-    )
+/// The hottest `DDR5` module's temperature in degrees Celsius.
+pub struct Ddr5Temperature {
+    reader: HubReader<PawnModule>,
+}
+
+impl Ddr5Temperature {
+    /// Loads the module; the hubs are found on the first read, so a busy bus now does not become a permanent `—`.
+    ///
+    /// # Errors
+    /// `Unavailable` when the module file, `PawnIO`, elevation, or a supported chipset is missing; `Failed` otherwise.
+    pub fn open(modules_dir: &Path) -> Result<Self, ReadError> {
+        let module = load_module(modules_dir, MODULE)?;
+        Ok(Self {
+            reader: HubReader::new(module, SMBUS_LOCK),
+        })
+    }
+}
+
+impl std::fmt::Debug for Ddr5Temperature {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Ddr5Temperature")
+            .field("hubs", &self.reader.hubs)
+            .finish_non_exhaustive()
+    }
+}
+
+impl Sensor for Ddr5Temperature {
+    fn read(&mut self) -> Result<f64, ReadError> {
+        self.reader.read()
+    }
 }
 
 /// An `SPD5118` hub reports device type 0x51 in MR0 and revision 0x18 in MR1.
