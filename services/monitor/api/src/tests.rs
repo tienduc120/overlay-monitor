@@ -1,17 +1,20 @@
 use std::cell::Cell;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
+use std::time::Duration;
 
 use monitor_application::testing::{FakeGpuSensors, FakeSensor, FakeStartupTask};
 use monitor_application::{GpuPair, Line, ReadError, Sampler, Sensor, Sensors, Settings};
-use monitor_infrastructure::{FrameCounter, UnavailableSensor};
+use monitor_infrastructure::{FrameCounter, PRESENT_PROVIDERS, UnavailableSensor};
 use platform_clock::{FixedClock, Timestamp};
+use platform_win32::etw::{start_session, stop_session};
 
 use monitor_application::StartupTask;
 
 use super::{
-    SamplerControl, UnavailableStartup, build_sensors, modules_dir, refresh_startup_task, sample_until_stopped,
-    startup_failure_text,
+    SamplerControl, UnavailableStartup, build_sensors, count_frames_until_stopped, modules_dir, refresh_startup_task,
+    sample_until_stopped, startup_failure_text, wait_to_restart,
 };
 
 fn fixed_sensors() -> Sensors {
@@ -226,4 +229,50 @@ fn without_a_log_folder_the_text_leaves_it_out() {
         text,
         "Overlay Monitor could not start: create the overlay window: the access was refused"
     );
+}
+
+#[test]
+fn waiting_to_restart_ends_when_the_app_is_stopping_or_the_sender_is_gone() {
+    let (sender, stop) = mpsc::channel::<()>();
+    let stopping = AtomicBool::new(false);
+
+    assert!(wait_to_restart(&stop, &stopping, Duration::ZERO));
+
+    stopping.store(true, Ordering::SeqCst);
+    assert!(!wait_to_restart(&stop, &stopping, Duration::ZERO));
+
+    stopping.store(false, Ordering::SeqCst);
+    drop(sender);
+    assert!(!wait_to_restart(&stop, &stopping, Duration::from_secs(60)));
+}
+
+#[test]
+#[ignore = "needs an elevated terminal"]
+fn a_trace_stopped_from_outside_is_started_again() {
+    const NAME: &str = "OverlayMonitorRestartTest";
+    let first = start_session(NAME, PRESENT_PROVIDERS).unwrap();
+    let counter = FrameCounter::new();
+    let stopping = AtomicBool::new(false);
+    let (sender, stop) = mpsc::channel::<()>();
+
+    let runs = std::thread::scope(|scope| {
+        let stopping = &stopping;
+        let counter = &counter;
+        let worker = scope.spawn(move || count_frames_until_stopped(first, NAME, counter, stopping, &stop));
+        pause(Duration::from_millis(500));
+        stop_session(NAME).unwrap();
+        // The restart waits 5 s; a second session shows up by name once it started.
+        pause(Duration::from_secs(7));
+        stopping.store(true, Ordering::SeqCst);
+        drop(sender);
+        stop_session(NAME).unwrap();
+        worker.join().unwrap()
+    });
+
+    assert!(runs >= 2, "the trace ran {runs} time(s)");
+}
+
+/// Waits on a channel nobody sends on, which is how a test waits on the clock.
+fn pause(time: Duration) {
+    mpsc::channel::<()>().1.recv_timeout(time).ok();
 }

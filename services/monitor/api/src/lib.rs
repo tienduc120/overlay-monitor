@@ -4,8 +4,10 @@
 use std::error::Error;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use monitor_application::{
     DriverStatus, GpuPair, GpuSensors, OverlayFrame, Sampler, SamplerControl, Sensor, Sensors, Settings, SettingsStore,
@@ -40,6 +42,8 @@ use tracing_subscriber::{EnvFilter, fmt};
 /// Held while a copy runs, so a second copy in this session exits at once.
 const INSTANCE_NAME: &str = r"Local\OverlayMonitor";
 const TRACE_SESSION: &str = "OverlayMonitor";
+/// How long a stopped trace waits before it is started again.
+const RESTART_DELAY: Duration = Duration::from_secs(5);
 const TOOLTIP: &str = "Overlay Monitor";
 /// The owner's icon, in the file's several sizes.
 const OWNER_ICON: &[u8] = include_bytes!("../assets/icon.ico");
@@ -333,19 +337,23 @@ fn show_overlay(
         },
     );
     let waker = window.waker();
-    let (session, consumer) = trace.unzip();
+    let stopping = AtomicBool::new(false);
+    let (stop_sender, stop) = mpsc::channel::<()>();
+    let tracing_frames = trace.is_some();
     std::thread::scope(|scope| {
         scope.spawn(move || sample_until_stopped(&mut sampler, &frames, || waker.wake(), &controls));
-        if let Some(consumer) = consumer {
-            scope.spawn(move || count_frames(consumer, counter));
+        if let Some(first) = trace {
+            let stopping = &stopping;
+            scope.spawn(move || count_frames_until_stopped(first, TRACE_SESSION, counter, stopping, &stop));
         }
         run_message_loop(&window, &mut |event| ui.handle(&window, event));
-        // The scope joins both threads next: the UI holds the control sender, so dropping it lets the sampler end, and
-        // the consumer's run ends with the session, even when stopping it fails.
+        // The scope joins both threads next: the UI holds the control sender, so dropping it lets the sampler end. The
+        // flag and the dropped sender keep the frame thread from starting another session, and stopping by name ends
+        // the one it has running.
         drop(ui);
-        if let Some(session) = &session
-            && let Err(error) = session.stop()
-        {
+        stopping.store(true, Ordering::SeqCst);
+        drop(stop_sender);
+        if tracing_frames && let Err(error) = stop_session(TRACE_SESSION) {
             tracing::warn!(?error, "stop the frame trace");
         }
     });
@@ -400,7 +408,68 @@ fn wait_for_next_round<C: Clock>(sampler: &mut Sampler<C>, control: &Receiver<Sa
     }
 }
 
-/// Counts every frame presented, by process, until the session stops.
+/// Counts every frame presented, by process, until the session stops. Returns how many times the trace ran.
+///
+/// A trace that ends while the app is not stopping was stopped from outside; it is started again after a pause, which
+/// is also what keeps a session that cannot start from being retried in a spin. The thread owns every session, so
+/// stopping by name at exit ends whichever one is running.
+fn count_frames_until_stopped(
+    first: (TraceSession, TraceConsumer),
+    session_name: &str,
+    counter: &FrameCounter,
+    stopping: &AtomicBool,
+    stop: &Receiver<()>,
+) -> usize {
+    let mut runs = 0;
+    let mut current = first;
+    loop {
+        let (session, consumer) = current;
+        runs += 1;
+        count_frames(consumer, counter);
+        // The session may already be gone; dropping it makes sure no half-stopped one is left behind.
+        drop(session);
+        if stopping.load(Ordering::SeqCst) {
+            return runs;
+        }
+        tracing::warn!("the frame trace ended, so it is started again");
+        let Some(next) = start_again(session_name, stopping, stop) else {
+            return runs;
+        };
+        current = next;
+    }
+}
+
+/// Waits and starts the session again until one starts; `None` once the app is stopping.
+fn start_again(
+    session_name: &str,
+    stopping: &AtomicBool,
+    stop: &Receiver<()>,
+) -> Option<(TraceSession, TraceConsumer)> {
+    while wait_to_restart(stop, stopping, RESTART_DELAY) {
+        match start_session(session_name, PRESENT_PROVIDERS) {
+            Ok(started) => {
+                // A stop by name that came before this start found nothing to end.
+                if stopping.load(Ordering::SeqCst) {
+                    started.0.stop().ok();
+                    return None;
+                }
+                return Some(started);
+            }
+            Err(error) => tracing::warn!(?error, "the frame trace could not be started again"),
+        }
+    }
+    None
+}
+
+/// Waits up to `delay` before a restart; `false` when the app is stopping, which a message or a gone sender says.
+fn wait_to_restart(stop: &Receiver<()>, stopping: &AtomicBool, delay: Duration) -> bool {
+    match stop.recv_timeout(delay) {
+        Err(RecvTimeoutError::Timeout) | Ok(()) => !stopping.load(Ordering::SeqCst),
+        Err(RecvTimeoutError::Disconnected) => false,
+    }
+}
+
+/// Counts the frames of one trace until its session stops.
 fn count_frames(consumer: TraceConsumer, counter: &FrameCounter) {
     let outcome = consumer.run(&mut |event| {
         if is_present(event) {
