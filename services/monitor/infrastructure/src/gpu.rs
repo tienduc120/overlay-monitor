@@ -112,9 +112,9 @@ pub(crate) fn fan_value(rpm: u32, seen_spinning: &mut bool) -> Option<f64> {
 /// The VRAM clock in MHz; a driver that does not report it leaves 0.
 #[must_use]
 pub(crate) fn memory_mhz(hz: u64) -> Option<f64> {
-    #[expect(clippy::cast_precision_loss, reason = "a clock stays far below 2^53 Hz")]
-    let mhz = hz as f64 / 1_000_000.0;
-    (hz > 0).then_some(mhz)
+    // Counted in whole kHz: a `u32` converts to `f64` exactly, and the overlay shows whole MHz.
+    let khz = u32::try_from(hz / 1_000).unwrap_or(u32::MAX);
+    (hz > 0).then(|| f64::from(khz) / 1_000.0)
 }
 
 /// The busiest video engine of one adapter (decode, encode, or processing), at most 100. JPEG engines are left out:

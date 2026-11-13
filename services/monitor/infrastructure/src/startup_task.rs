@@ -130,11 +130,19 @@ impl SchtasksStartup {
     }
 
     fn remove(&self) -> Result<(), SchtasksError> {
-        let query = Self::schtasks(&["/Query", "/TN", &self.task_name]).map_err(SchtasksError::Run)?;
-        if !query.status.success() {
-            return Ok(());
-        }
-        Self::checked("/Delete", &["/Delete", "/TN", &self.task_name, "/F"])
+        let deleted = Self::checked("/Delete", &["/Delete", "/TN", &self.task_name, "/F"]);
+        removal(deleted, || {
+            Self::schtasks(&["/Query", "/TN", &self.task_name]).is_ok_and(|query| query.status.success())
+        })
+    }
+}
+
+/// Whether removing the task worked. `schtasks.exe` refuses to delete a task that is not there, so a refusal counts
+/// only while `still_listed` finds the task; one that could not run at all is always reported.
+fn removal(deleted: Result<(), SchtasksError>, still_listed: impl FnOnce() -> bool) -> Result<(), SchtasksError> {
+    match deleted {
+        Err(SchtasksError::Failed { .. }) if !still_listed() => Ok(()),
+        other => other,
     }
 }
 

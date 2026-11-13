@@ -15,6 +15,9 @@ use crate::ryzen::RyzenTemperature;
 
 /// Other hardware monitors hold these locks too, so waiting longer would stall the overlay for nothing.
 const LOCK_TIMEOUT: Duration = Duration::from_millis(500);
+/// After a module failed to open, this many reads answer the same failure before it is tried again: each try reads
+/// the module file and loads it into the driver.
+const READS_BETWEEN_OPENS: u32 = 30;
 
 #[derive(Debug, thiserror::Error)]
 enum LoadError {
@@ -92,9 +95,31 @@ impl DriverStatus for PawnIoProbe {
 enum Reopening<S> {
     /// No sensor yet; each read asks the driver again, so an install while the app runs is noticed. Holds why not.
     Waiting(String),
+    /// Opening failed although the driver is there. The same failure is answered for `reads_left` more reads, then it
+    /// is tried again.
+    Retrying {
+        failure: String,
+        reads_left: u32,
+    },
     Open(S),
     /// The module refuses this machine or its file is missing; asking again would change nothing.
     GivenUp(String),
+}
+
+/// A failure to open that is answered again without trying, in the same words, so it is not news to the sampler.
+#[derive(Debug, thiserror::Error)]
+#[error("{0}")]
+struct OpenStillFailing(String);
+
+/// An error and each cause under it on one line, as the sampler words a failure.
+fn chain_text(error: &(dyn std::error::Error + 'static)) -> String {
+    let mut texts = vec![error.to_string()];
+    let mut cause = error.source();
+    while let Some(next) = cause {
+        texts.push(next.to_string());
+        cause = next.source();
+    }
+    texts.join(": ")
 }
 
 struct ReopeningSensor<P, F, S> {
@@ -113,7 +138,11 @@ where
         match &mut self.state {
             Reopening::Open(sensor) => return sensor.read(),
             Reopening::GivenUp(reason) => return Err(ReadError::Unavailable(reason.clone())),
-            Reopening::Waiting(_) => {}
+            Reopening::Retrying { failure, reads_left } if *reads_left > 0 => {
+                *reads_left -= 1;
+                return Err(ReadError::Failed(Box::new(OpenStillFailing(failure.clone()))));
+            }
+            Reopening::Retrying { .. } | Reopening::Waiting(_) => {}
         }
         let status = (self.probe)();
         if !matches!(status, PawnIoStatus::Installed { .. }) {
@@ -131,27 +160,37 @@ where
                 self.state = Reopening::GivenUp(reason.clone());
                 Err(ReadError::Unavailable(reason))
             }
-            Err(failed @ ReadError::Failed(_)) => Err(failed),
+            Err(ReadError::Failed(source)) => {
+                let failure = chain_text(source.as_ref());
+                self.state = Reopening::Retrying {
+                    failure,
+                    reads_left: READS_BETWEEN_OPENS - 1,
+                };
+                Err(ReadError::Failed(source))
+            }
         }
     }
 
     fn extras(&self) -> Extras {
         match &self.state {
             Reopening::Open(sensor) => sensor.extras(),
-            Reopening::Waiting(_) | Reopening::GivenUp(_) => Extras::default(),
+            Reopening::Waiting(_) | Reopening::Retrying { .. } | Reopening::GivenUp(_) => Extras::default(),
         }
     }
 
     fn details(&self) -> Option<String> {
         match &self.state {
             Reopening::Open(sensor) => sensor.details(),
-            Reopening::Waiting(reason) | Reopening::GivenUp(reason) => Some(format!("not opened: {reason}")),
+            Reopening::Waiting(reason) | Reopening::Retrying { failure: reason, .. } | Reopening::GivenUp(reason) => {
+                Some(format!("not opened: {reason}"))
+            }
         }
     }
 }
 
 /// A sensor that opens only once `probe` says the driver is installed and recent enough, and tries again on each read
-/// until then. `open` that fails with `Unavailable` ends the tries; a plain failure is tried again.
+/// until then. `open` that fails with `Unavailable` ends the tries; a plain failure is tried again every
+/// `READS_BETWEEN_OPENS` reads.
 pub fn reopening<S: Sensor + 'static>(
     probe: impl FnMut() -> PawnIoStatus + Send + 'static,
     open: impl FnMut() -> Result<S, ReadError> + Send + 'static,

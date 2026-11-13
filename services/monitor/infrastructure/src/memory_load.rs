@@ -36,13 +36,13 @@ impl Sensor for MemoryLoad {
     }
 }
 
-/// Windows' "GB" in Task Manager: gibibytes.
-const BYTES_PER_GB: f64 = 1_073_741_824.0;
+/// Windows' "GB" in Task Manager: gibibytes, here counted in MiB.
+const MIB_PER_GB: f64 = 1024.0;
 
+/// Counted in whole MiB: a `u32` converts to `f64` exactly, and the overlay shows a tenth of a GB.
 fn used_gb(status: MemoryStatus) -> f64 {
-    #[expect(clippy::cast_precision_loss, reason = "byte counts stay far below 2^53")]
-    let used = status.total_phys.saturating_sub(status.avail_phys) as f64;
-    used / BYTES_PER_GB
+    let used = status.total_phys.saturating_sub(status.avail_phys);
+    f64::from(u32::try_from(used >> 20).unwrap_or(u32::MAX)) / MIB_PER_GB
 }
 
 fn load_percent(status: MemoryStatus) -> Option<f64> {

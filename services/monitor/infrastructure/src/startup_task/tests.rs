@@ -55,6 +55,37 @@ fn the_file_is_utf16_with_a_byte_order_mark() {
     assert_eq!(bytes, [0xFF, 0xFE, b'a', 0x00, 0xE9, 0x00]);
 }
 
+fn refused_delete() -> SchtasksError {
+    SchtasksError::Failed {
+        action: "/Delete",
+        status: String::from("exit code: 1"),
+        output: String::from("ERROR: Access is denied."),
+    }
+}
+
+#[test]
+fn a_refused_delete_of_a_task_that_is_still_listed_is_reported() {
+    let outcome = removal(Err(refused_delete()), || true);
+
+    assert!(
+        matches!(outcome, Err(SchtasksError::Failed { action: "/Delete", .. })),
+        "{outcome:?}"
+    );
+}
+
+#[test]
+fn a_refused_delete_of_a_task_that_is_not_there_is_done() {
+    removal(Err(refused_delete()), || false).unwrap();
+    removal(Ok(()), || panic!("a deleted task needs no look")).unwrap();
+}
+
+#[test]
+fn schtasks_that_cannot_run_is_reported_whatever_the_list_says() {
+    let outcome = removal(Err(SchtasksError::Run(io::Error::other("not found"))), || false);
+
+    assert!(matches!(outcome, Err(SchtasksError::Run(_))), "{outcome:?}");
+}
+
 #[test]
 #[ignore = "needs an elevated terminal"]
 fn the_task_can_be_created_and_removed() {

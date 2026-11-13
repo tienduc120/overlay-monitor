@@ -108,10 +108,11 @@ impl FrameCounter {
     }
 }
 
+/// Nanoseconds as milliseconds, counted in whole microseconds: a `u32` converts to `f64` exactly, and a frame time
+/// shows a tenth of a millisecond.
 fn ns_to_ms(ns: u64) -> f64 {
-    #[expect(clippy::cast_precision_loss, reason = "a frame time stays far below 2^53 ns")]
-    let ns = ns as f64;
-    ns / 1_000_000.0
+    let us = u32::try_from(ns / 1_000).unwrap_or(u32::MAX);
+    f64::from(us) / 1_000.0
 }
 
 /// Below this, one frame more or less swings the rate by 10 or more per second.

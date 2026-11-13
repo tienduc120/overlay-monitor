@@ -1,4 +1,6 @@
 use std::path::Path;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, Instant};
 
 use monitor_application::testing::FakeSensor;
@@ -7,7 +9,7 @@ use platform_win32::Win32Error;
 use platform_win32::mutex::GlobalMutex;
 use platform_win32::pawnio::{PawnError, PawnVersion};
 
-use super::{classify, load_module, open_failure, reopening, with_lock};
+use super::{READS_BETWEEN_OPENS, classify, load_module, open_failure, reopening, with_lock};
 
 #[test]
 fn a_missing_module_file_is_unavailable_and_says_how_to_get_it() {
@@ -158,6 +160,42 @@ fn a_module_that_refuses_this_machine_is_not_tried_again() {
             "{reply:?}"
         );
     }
+}
+
+#[test]
+fn a_module_that_keeps_failing_to_open_is_tried_again_only_every_so_many_reads() {
+    let opens = Arc::new(AtomicU32::new(0));
+    let counted = Arc::clone(&opens);
+    let mut sensor = reopening(
+        || PawnIoStatus::Installed {
+            version: "2.2.0".into(),
+        },
+        move || -> Result<FakeSensor, ReadError> {
+            counted.fetch_add(1, Ordering::SeqCst);
+            Err(ReadError::Failed("the driver refused the module".into()))
+        },
+    );
+
+    for read in 0..READS_BETWEEN_OPENS {
+        let reply = sensor.read();
+        let said = match &reply {
+            Err(ReadError::Failed(source)) => source.to_string(),
+            other => panic!("read {read}: {other:?}"),
+        };
+        assert_eq!(
+            said, "the driver refused the module",
+            "the same text, so it is not news"
+        );
+    }
+    assert_eq!(opens.load(Ordering::SeqCst), 1, "each try loads the module again");
+
+    sensor.read().unwrap_err();
+
+    assert_eq!(opens.load(Ordering::SeqCst), 2, "then it is tried again");
+    assert_eq!(
+        sensor.details().as_deref(),
+        Some("not opened: the driver refused the module")
+    );
 }
 
 #[test]

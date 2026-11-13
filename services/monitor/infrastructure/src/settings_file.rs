@@ -5,7 +5,7 @@
 //! makes the file unreadable.
 
 use std::fs;
-use std::io;
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -406,14 +406,18 @@ impl SettingsStore for TomlSettingsStore {
     }
 }
 
-/// Writes beside the file and renames over it, so a crash mid-write never leaves a half-written settings file.
+/// Writes beside the file, flushes it to the disk, and renames it over the old one, so neither a crash mid-write nor a
+/// power cut after the rename leaves an empty or half-written settings file (empty text would load as the defaults).
 fn write_atomically(path: &Path, settings: &Settings) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let body = toml::to_string(&SettingsFile::of(settings))?;
     if let Some(folder) = path.parent() {
         fs::create_dir_all(folder)?;
     }
     let temporary = beside(path, ".tmp");
-    fs::write(&temporary, format!("{HEADER}{body}"))?;
+    let mut file = fs::File::create(&temporary)?;
+    file.write_all(format!("{HEADER}{body}").as_bytes())?;
+    file.sync_all()?;
+    drop(file);
     fs::rename(&temporary, path)?;
     Ok(())
 }
