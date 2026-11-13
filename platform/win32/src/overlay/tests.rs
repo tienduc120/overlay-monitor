@@ -3,14 +3,16 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use windows::Win32::Foundation::{DWRITE_E_NOFONT, LPARAM, LRESULT, POINT, RECT, WPARAM};
+use windows::Win32::Graphics::Gdi::{GetMonitorInfoW, MONITOR_DEFAULTTOPRIMARY, MONITORINFO, MonitorFromPoint};
 use windows::Win32::UI::WindowsAndMessaging::{
     GWL_EXSTYLE, GetWindowLongPtrW, GetWindowRect, HTCAPTION, HWND_NOTOPMOST, IsWindow, MA_NOACTIVATE, MSG, PM_REMOVE,
     PeekMessageW, PostMessageW, SPI_GETWORKAREA, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER,
-    SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS, SendMessageW, SetWindowPos, SystemParametersInfoW, WM_CLOSE, WM_MOUSEACTIVATE,
-    WM_NCHITTEST, WM_NCRBUTTONUP, WM_QUIT, WS_EX_TOPMOST,
+    SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS, SendMessageW, SetWindowPos, SystemParametersInfoW, WM_CLOSE, WM_EXITSIZEMOVE,
+    WM_MOUSEACTIVATE, WM_NCHITTEST, WM_NCRBUTTONUP, WM_QUIT, WS_EX_TOPMOST,
 };
 
 use super::{OverlayWindow, on_moving, premultiplied_bgra, screen_point, shared, snap_distance, window_size};
+use crate::placement::MonitorPlacement;
 use crate::text::TextStyle;
 use crate::ui::{EventSink, UiEvent, pump_messages_for};
 
@@ -329,4 +331,59 @@ fn a_snapped_window_that_grows_stays_flush_with_the_edge() {
         .unwrap();
 
     assert_eq!(window_rect(&window).left, 0, "growing must not pull it off the edge");
+}
+
+#[test]
+fn the_placement_names_the_monitor_and_the_offset_within_it() {
+    let window = OverlayWindow::create(EventSink::discard()).unwrap();
+    window.move_to(None);
+
+    let placement = window.placement().unwrap();
+
+    assert!(!placement.monitor.is_empty(), "the monitor must be named");
+    let work = primary_work_area();
+    let monitor = primary_monitor_bounds();
+    assert_eq!(
+        (placement.x, placement.y),
+        (work.left - monitor.left, work.top - monitor.top),
+        "with nothing saved the overlay sits at the primary work area's origin"
+    );
+}
+
+#[test]
+fn a_saved_placement_moves_the_window_back_to_it() {
+    let window = OverlayWindow::create(EventSink::discard()).unwrap();
+    window.move_to(None);
+    let home = window.placement().unwrap();
+    let elsewhere = MonitorPlacement {
+        x: home.x + 40,
+        y: home.y + 30,
+        monitor: home.monitor,
+    };
+
+    window.move_to(Some(&elsewhere));
+
+    assert_eq!(window.placement(), Some(elsewhere));
+}
+
+#[test]
+fn a_finished_drag_is_reported() {
+    let (sink, events) = recording_sink();
+    let window = OverlayWindow::create(sink).unwrap();
+
+    send(&window, WM_EXITSIZEMOVE, WPARAM(0), LPARAM(0));
+
+    assert_eq!(*events.borrow(), [UiEvent::OverlayMoved]);
+}
+
+fn primary_monitor_bounds() -> RECT {
+    // SAFETY: plain values; the screen origin is always on the primary monitor.
+    let monitor = unsafe { MonitorFromPoint(POINT::default(), MONITOR_DEFAULTTOPRIMARY) };
+    let mut info = MONITORINFO {
+        cbSize: u32::try_from(size_of::<MONITORINFO>()).unwrap(),
+        ..MONITORINFO::default()
+    };
+    // SAFETY: `info` is a live local with its size set.
+    unsafe { GetMonitorInfoW(monitor, &raw mut info) }.ok().unwrap();
+    info.rcMonitor
 }

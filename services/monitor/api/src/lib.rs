@@ -6,12 +6,15 @@ use std::process::ExitCode;
 use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 
-use monitor_application::{GpuPair, GpuSensors, OverlayFrame, Sampler, Sensor, Sensors, Settings, default_style};
+use monitor_application::{
+    GpuPair, GpuSensors, OverlayFrame, Sampler, SamplerControl, Sensor, Sensors, Settings, SettingsStore, load_settings,
+};
+use monitor_domain::MemoryKind;
 use monitor_infrastructure::{
     AdapterSensors, CpuLoad, Ddr5Temperature, FrameCounter, FrameRate, MemoryLoad, PRESENT_PROVIDERS, RyzenTemperature,
-    UnavailableSensor, is_present, or_unavailable,
+    TomlSettingsStore, UnavailableSensor, is_present, or_unavailable, settings_path,
 };
-use monitor_interfaces::{OverlayView, Ui};
+use monitor_interfaces::{OverlayView, Ui, UiParts};
 use platform_clock::{Clock, SystemClock};
 use platform_win32::Win32Error;
 use platform_win32::dpi::{enable_per_monitor_awareness, small_icon_size};
@@ -19,6 +22,7 @@ use platform_win32::etw::{TraceConsumer, TraceSession, start_session};
 use platform_win32::gpu::{GpuAdapter, gpu_adapters};
 use platform_win32::icon::Icon;
 use platform_win32::instance::SingleInstance;
+use platform_win32::known_folder::roaming_app_data;
 use platform_win32::overlay::OverlayWindow;
 use platform_win32::tray::TrayIcon;
 use platform_win32::ui::{MessageWindow, run_message_loop};
@@ -63,12 +67,6 @@ pub fn build_sensors(modules: &Path, gpu: GpuPair, frames: Arc<FrameCounter>) ->
     }
 }
 
-/// What the main thread tells the sampler.
-pub enum SamplerControl {
-    /// Follow these settings, and sample again at once.
-    Apply(Settings),
-}
-
 fn unavailable(reason: &str) -> Box<dyn Sensor> {
     Box::new(UnavailableSensor(reason.to_owned()))
 }
@@ -91,7 +89,9 @@ pub fn run() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    let settings = Settings::default();
+    let store: Box<dyn SettingsStore> = Box::new(TomlSettingsStore::new(settings_file()));
+    // Task 15 detects the memory; until then the DDR5 layout is the default.
+    let settings = load_settings(store.as_ref(), MemoryKind::Ddr5);
     let mut gpus = AdapterSensors::new(listed_adapters());
     let gpu = gpus.open(settings.gpu.as_deref());
     let trace = start_frame_trace();
@@ -101,7 +101,7 @@ pub fn run() -> ExitCode {
         sensors.fps = unavailable(FPS_NEEDS_ADMIN);
     }
     let sampler = Sampler::new(sensors, Box::new(gpus), SystemClock, &settings);
-    match show_overlay(sampler, trace, &counter) {
+    match show_overlay(sampler, settings, store, trace, &counter) {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             tracing::error!(?error, "open the overlay");
@@ -148,10 +148,29 @@ fn own_modules_dir() -> PathBuf {
     }
 }
 
+/// `settings.toml` in the app's folder under `%APPDATA%`, or next to the exe when Windows cannot name that folder.
+fn settings_file() -> PathBuf {
+    match roaming_app_data() {
+        Ok(folder) => settings_path(&folder),
+        Err(error) => {
+            tracing::error!(
+                ?error,
+                "the app data folder is unknown, so the settings are kept next to the exe"
+            );
+            std::env::current_exe().map_or_else(
+                |_| PathBuf::from("settings.toml"),
+                |exe| exe.with_file_name("settings.toml"),
+            )
+        }
+    }
+}
+
 /// Opens the overlay and the tray icon, runs the sampler and the frame counter beside the UI loop until it ends, then
 /// stops them in order.
 fn show_overlay(
     mut sampler: Sampler<SystemClock>,
+    settings: Settings,
+    store: Box<dyn SettingsStore>,
     trace: Option<(TraceSession, TraceConsumer)>,
     counter: &FrameCounter,
 ) -> Result<(), OpenError> {
@@ -161,9 +180,15 @@ fn show_overlay(
     let tray = TrayIcon::add(&window, TOOLTIP, &icon).map_err(OpenError::TrayIcon)?;
     let (frames, received) = mpsc::channel();
     let view = OverlayView::new(overlay);
-    view.show();
-    let mut ui = Ui::new(view, tray, received, default_style());
     let (control, controls) = mpsc::channel();
+    let mut ui = Ui::new(UiParts {
+        view,
+        tray,
+        frames: received,
+        sampler: control,
+        settings,
+        store,
+    });
     let waker = window.waker();
     let (session, consumer) = trace.unzip();
     std::thread::scope(|scope| {
@@ -172,17 +197,16 @@ fn show_overlay(
             scope.spawn(move || count_frames(consumer, counter));
         }
         run_message_loop(&window, &mut |event| ui.handle(&window, event));
-        // The scope joins both threads next: the sampler sees its control sender gone, and the consumer's run ends with
-        // the session, even when stopping it fails.
-        drop(control);
+        // The scope joins both threads next: the UI holds the control sender, so dropping it lets the sampler end, and
+        // the consumer's run ends with the session, even when stopping it fails.
+        drop(ui);
         if let Some(session) = &session
             && let Err(error) = session.stop()
         {
             tracing::warn!(?error, "stop the frame trace");
         }
     });
-    // The tray icon, which `ui` holds, goes before the window the shell knows it by; the image it shows drops last.
-    drop(ui);
+    // The tray icon, which `ui` held, went before the window the shell knows it by; the image it shows drops last.
     drop(window);
     Ok(())
 }

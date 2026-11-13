@@ -31,14 +31,15 @@ use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, GWLP_USERDATA, GetCursorPos, GetWindowLongPtrW, GetWindowRect,
     HTCAPTION, HWND_TOPMOST, IsWindowVisible, MA_NOACTIVATE, PostQuitMessage, RegisterClassExW, SW_HIDE,
     SW_SHOWNOACTIVATE, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SetWindowLongPtrW, SetWindowPos,
-    ShowWindow, ULW_ALPHA, USER_DEFAULT_SCREEN_DPI, UpdateLayeredWindow, WM_CLOSE, WM_DPICHANGED, WM_MOUSEACTIVATE,
-    WM_MOVING, WM_NCHITTEST, WM_NCRBUTTONDOWN, WM_NCRBUTTONUP, WNDCLASSEXW, WS_EX_LAYERED, WS_EX_NOACTIVATE,
-    WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
+    ShowWindow, ULW_ALPHA, USER_DEFAULT_SCREEN_DPI, UpdateLayeredWindow, WM_CLOSE, WM_DPICHANGED, WM_EXITSIZEMOVE,
+    WM_MOUSEACTIVATE, WM_MOVING, WM_NCHITTEST, WM_NCRBUTTONDOWN, WM_NCRBUTTONUP, WNDCLASSEXW, WS_EX_LAYERED,
+    WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
 };
 use windows::core::{PCWSTR, w};
 
 use crate::Win32Error;
 use crate::dpi::{dips_from_points, pixels_from_dips};
+use crate::placement::{MonitorPlacement, monitors, named_monitor, resolve_origin};
 use crate::snap::{Edges, Rect, keep_snapped, snap_while_moving};
 use crate::text::{TextPainter, TextStyle};
 use crate::ui::{EventSink, UiEvent};
@@ -168,6 +169,46 @@ impl OverlayWindow {
             )
         }
         .ok();
+    }
+
+    /// The monitor the window is on and its offset from that monitor's top-left (full bounds, so it matches the snap),
+    /// or `None` when Windows cannot say.
+    pub fn placement(&self) -> Option<MonitorPlacement> {
+        let mut rect = RECT::default();
+        // SAFETY: the window is alive and `rect` is a live local.
+        unsafe { GetWindowRect(self.window, &raw mut rect) }.ok()?;
+        // SAFETY: a handle of a live window; the nearest monitor is always found.
+        let monitor = named_monitor(unsafe { MonitorFromWindow(self.window, MONITOR_DEFAULTTONEAREST) })?;
+        Some(MonitorPlacement {
+            monitor: monitor.name,
+            x: rect.left.saturating_sub(monitor.bounds.left),
+            y: rect.top.saturating_sub(monitor.bounds.top),
+        })
+    }
+
+    /// Moves the window to `saved`, or to the top-left of the primary work area when nothing is saved or its monitor
+    /// is gone. The offset is held inside the monitor, and the next draw keeps the whole window inside it too. It
+    /// keeps its size, visibility, and focus.
+    pub fn move_to(&self, saved: Option<&MonitorPlacement>) {
+        let fallback = primary_work_area_origin();
+        let (x, y) = resolve_origin(saved, &monitors(), (fallback.x, fallback.y));
+        // SAFETY: the window is alive. A failure leaves it where it was, which is still on a monitor.
+        unsafe {
+            SetWindowPos(
+                self.window,
+                None,
+                x,
+                y,
+                0,
+                0,
+                SWP_NOACTIVATE | SWP_NOSIZE | SWP_NOZORDER,
+            )
+        }
+        .ok();
+        // A place that was chosen, not dragged, is flush with nothing in particular.
+        if let Ok(mut canvas) = self.shared.canvas.try_borrow_mut() {
+            canvas.edges = Edges::default();
+        }
     }
 
     /// The DPI of the monitor the window is on now, which changes when it is dragged to another one.
@@ -508,6 +549,13 @@ unsafe extern "system" fn window_procedure(window: HWND, message: u32, wparam: W
                 proposed.is_some_and(|proposed| on_moving(window, unsafe { shared(window) }, proposed, cursor));
             // TRUE tells Windows the rectangle was changed.
             LRESULT(isize::from(handled))
+        }
+        WM_EXITSIZEMOVE => {
+            // SAFETY: called from this class's window procedure.
+            if let Some(shared) = unsafe { shared(window) } {
+                shared.sink.send(UiEvent::OverlayMoved);
+            }
+            LRESULT(0)
         }
         WM_NCRBUTTONUP => {
             // SAFETY: called from this class's window procedure.

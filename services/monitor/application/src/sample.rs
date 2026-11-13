@@ -6,6 +6,13 @@ use platform_clock::{Clock, Timestamp};
 use crate::settings::layout_of;
 use crate::{Extras, GpuSensors, ReadError, Sensor, Sensors, Settings};
 
+/// What the UI thread tells the sampler; it lives here, not in the root, because the delivery layer holds the sender.
+#[derive(Debug)]
+pub enum SamplerControl {
+    /// Follow these settings, and sample again at once.
+    Apply(Settings),
+}
+
 /// The text lines to draw for one round of readings.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct OverlayFrame {

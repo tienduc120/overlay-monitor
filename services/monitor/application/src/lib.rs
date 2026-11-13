@@ -9,7 +9,7 @@ mod style;
 pub mod testing;
 
 pub use ports::{Extras, GpuPair, GpuSensors, ReadError, Sensor, Sensors, SettingsStore};
-pub use sample::{OverlayFrame, Sampler};
+pub use sample::{OverlayFrame, Sampler, SamplerControl};
 pub use settings::{
     Field, InvalidShortcut, Line, LineSettings, LoadSettingsError, OverlayPosition, SaveSettingsError, Settings,
     ShortcutKeys, StyleSettings, line_fields, load_settings, overlay_style,

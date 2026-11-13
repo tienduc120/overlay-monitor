@@ -5,4 +5,4 @@ mod overlay_view;
 mod ui;
 
 pub use overlay_view::{OverlayView, needs_redraw, text_style};
-pub use ui::{Action, Ui, UiState, menu_items};
+pub use ui::{Action, Ui, UiParts, UiState, menu_items};

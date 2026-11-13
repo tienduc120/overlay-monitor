@@ -1,8 +1,8 @@
 //! What the tray icon and the menus do to the overlay: a pure state machine, and the glue that applies its actions.
 
-use std::sync::mpsc::Receiver;
+use std::sync::mpsc::{Receiver, Sender};
 
-use monitor_application::{OverlayFrame, OverlayStyle};
+use monitor_application::{OverlayFrame, OverlayStyle, SamplerControl, Settings, SettingsStore, overlay_style};
 use platform_win32::menu::{MenuItem, show_popup_menu};
 use platform_win32::tray::TrayIcon;
 use platform_win32::ui::{Flow, MessageWindow, UiEvent};
@@ -23,8 +23,15 @@ pub struct UiState {
 pub enum Action {
     ShowOverlay,
     HideOverlay,
-    ShowMenu { x: i32, y: i32 },
+    ShowMenu {
+        x: i32,
+        y: i32,
+    },
     DrawLatest,
+    /// Store where the overlay is now in the settings, and save them.
+    RememberPosition,
+    /// Store whether the overlay is shown in the settings, and save them.
+    SaveSettings,
     ReaddTrayIcon,
     Exit,
 }
@@ -34,6 +41,7 @@ impl UiState {
         match event {
             UiEvent::TrayClick => self.toggle(),
             UiEvent::TrayMenu { x, y } | UiEvent::OverlayMenu { x, y } => vec![Action::ShowMenu { x, y }],
+            UiEvent::OverlayMoved => vec![Action::RememberPosition],
             UiEvent::Wake if self.visible => vec![Action::DrawLatest],
             UiEvent::Wake => Vec::new(),
             UiEvent::TaskbarRestarted => vec![Action::ReaddTrayIcon],
@@ -52,9 +60,9 @@ impl UiState {
     fn toggle(&mut self) -> Vec<Action> {
         self.visible = !self.visible;
         if self.visible {
-            vec![Action::ShowOverlay, Action::DrawLatest]
+            vec![Action::ShowOverlay, Action::DrawLatest, Action::SaveSettings]
         } else {
-            vec![Action::HideOverlay]
+            vec![Action::HideOverlay, Action::SaveSettings]
         }
     }
 }
@@ -91,13 +99,28 @@ impl ErrorLog {
     }
 }
 
-/// The UI thread's state: the overlay, the tray icon, and the sampler's frames.
+/// What the UI thread is built from: the windows, the sampler's two channels, and the settings it starts from and
+/// saves into.
+pub struct UiParts {
+    pub view: OverlayView,
+    pub tray: TrayIcon,
+    pub frames: Receiver<OverlayFrame>,
+    pub sampler: Sender<SamplerControl>,
+    pub settings: Settings,
+    pub store: Box<dyn SettingsStore>,
+}
+
+/// The UI thread's state: the overlay, the tray icon, the sampler's frames, and the settings.
 pub struct Ui {
     state: UiState,
     // The tray icon goes before the window that owns it, and the caller drops the window after the `Ui`.
     tray: TrayIcon,
     view: OverlayView,
     frames: Receiver<OverlayFrame>,
+    /// Held so that dropping the `Ui` is what tells the sampler to stop; settings changes will be sent through it.
+    _sampler: Sender<SamplerControl>,
+    settings: Settings,
+    store: Box<dyn SettingsStore>,
     style: OverlayStyle,
     /// The newest frame received, drawn again when the overlay is shown or the style changes.
     latest: Option<OverlayFrame>,
@@ -106,15 +129,33 @@ pub struct Ui {
 }
 
 impl Ui {
-    pub fn new(view: OverlayView, tray: TrayIcon, frames: Receiver<OverlayFrame>, style: OverlayStyle) -> Self {
+    /// Places the overlay where the settings say, styles it by them, and shows or hides it as they say.
+    pub fn new(parts: UiParts) -> Self {
+        let UiParts {
+            view,
+            tray,
+            frames,
+            sampler,
+            settings,
+            store,
+        } = parts;
+        view.place(settings.position.as_ref());
+        if settings.visible {
+            view.show();
+        } else {
+            view.hide();
+        }
         Self {
             state: UiState {
-                visible: view.is_visible(),
+                visible: settings.visible,
             },
             tray,
             view,
             frames,
-            style,
+            _sampler: sampler,
+            style: overlay_style(&settings),
+            settings,
+            store,
             latest: None,
             draw_errors: ErrorLog::default(),
             tray_errors: ErrorLog::default(),
@@ -145,6 +186,8 @@ impl Ui {
             Action::HideOverlay => self.view.hide(),
             Action::DrawLatest => self.draw_latest(),
             Action::ReaddTrayIcon => self.readd_tray_icon(),
+            Action::RememberPosition => self.remember_position(),
+            Action::SaveSettings => self.save_settings(),
             Action::ShowMenu { x, y } => return self.choose_from_menu(window, x, y),
             Action::Exit => return Flow::Exit,
         }
@@ -160,6 +203,22 @@ impl Ui {
                 self.apply(window, followed)
             }
             None => Flow::Continue,
+        }
+    }
+
+    /// Keeps the place the overlay was dragged to. A position Windows cannot report leaves the saved one as it was.
+    fn remember_position(&mut self) {
+        if let Some(position) = self.view.position() {
+            self.settings.position = Some(position);
+        }
+        self.save_settings();
+    }
+
+    /// A failed save is logged and the app carries on with what it has in memory.
+    fn save_settings(&mut self) {
+        self.settings.visible = self.state.visible;
+        if let Err(error) = self.store.save(&self.settings) {
+            tracing::warn!(?error, "the settings could not be saved");
         }
     }
 

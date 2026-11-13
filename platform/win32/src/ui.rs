@@ -39,6 +39,8 @@ pub enum UiEvent {
     TrayMenu { x: i32, y: i32 },
     /// A right-click on the overlay at this screen point, where its menu opens.
     OverlayMenu { x: i32, y: i32 },
+    /// The user finished dragging the overlay, so it has a place worth remembering.
+    OverlayMoved,
     /// The sampler thread has a new frame.
     Wake,
     /// Explorer restarted, so the tray icon is gone and must be added again.

@@ -1,6 +1,7 @@
-use monitor_application::{OverlayFrame, OverlayStyle};
+use monitor_application::{OverlayFrame, OverlayPosition, OverlayStyle};
 use platform_win32::Win32Error;
 use platform_win32::overlay::OverlayWindow;
+use platform_win32::placement::MonitorPlacement;
 use platform_win32::text::TextStyle;
 
 /// The overlay window, showing the sampler's frames.
@@ -32,6 +33,25 @@ impl OverlayView {
 
     pub fn is_visible(&self) -> bool {
         self.window.is_visible()
+    }
+
+    /// Puts the overlay at `saved`, or at the main monitor's top-left when nothing is saved or its monitor is gone.
+    pub fn place(&self, saved: Option<&OverlayPosition>) {
+        let saved = saved.map(|position| MonitorPlacement {
+            monitor: position.monitor.clone(),
+            x: position.x,
+            y: position.y,
+        });
+        self.window.move_to(saved.as_ref());
+    }
+
+    /// Where the overlay is now, or `None` when Windows cannot say.
+    pub fn position(&self) -> Option<OverlayPosition> {
+        self.window.placement().map(|placement| OverlayPosition {
+            monitor: placement.monitor,
+            x: placement.x,
+            y: placement.y,
+        })
     }
 
     /// Draws `frame` in `style` when it differs from what is shown, and otherwise only puts the window back on top

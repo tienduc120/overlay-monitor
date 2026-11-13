@@ -296,6 +296,7 @@ version = "0.1.0"
 dependencies = [
  "embed-resource",
  "monitor-application",
+ "monitor-domain",
  "monitor-infrastructure",
  "monitor-interfaces",
  "platform-clock",
