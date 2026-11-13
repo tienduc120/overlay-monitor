@@ -12,3 +12,7 @@
 
 # Personal Claude Code settings
 .claude/settings.local.json
+
+# Implementation plans and the plan-execution workspace stay local; the design specs are committed
+/docs/superpowers/plans/
+/.superpowers/
