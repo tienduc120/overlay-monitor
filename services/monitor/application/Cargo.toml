@@ -1,0 +1,21 @@
+[package]
+name = "monitor-application"
+description = "The sensor port every hardware adapter implements, and the sampler that turns readings into overlay lines."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+monitor-domain = { path = "../domain" }
+platform-clock = { workspace = true }
+thiserror = { workspace = true, features = ["std"] }
+tracing = { workspace = true }
+
+[features]
+# Fakes of this crate's ports for other layers' tests; only ever a dev-dependency feature.
+test-support = []
+
+[lints]
+workspace = true

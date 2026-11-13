@@ -60,7 +60,7 @@ One bounded context per service under `services/<name>/`, one crate per layer. A
 | `platform-win32` | other platform crates | `windows`; the only crate with `unsafe` |
 
 - A service never depends on another service's crates. Nothing depends on `xtask`.
-- Ports are traits declared in `application`, with an explicit `-> impl Future<Output = ...> + Send`. Adapters are chosen in the composition root; use cases are generic over their ports (ADR-0007).
+- Ports are traits declared in `application` with plain `fn` methods, not futures (ADR-0014). Adapters are chosen in the composition root; use cases are generic over their ports (ADR-0007).
 - An aggregate root carries `agent:aggregate` in its doc comment, has a field `id` of a type its crate defines, `new` (checks invariants), and `restore` (rebuilds a stored value). Only infrastructure calls `restore` outside tests (ADR-0007).
 - A use case takes a command of plain values and returns its own result and error types; delivery never handles a domain type. Fakes of a crate's ports live in its `testing` module behind the `test-support` feature, so other layers' tests can use them.
 
@@ -95,7 +95,6 @@ Grow this by correction: when any tool gets something wrong, add the line.
 
 - **The guard judges paths from the session's directory.** `cd elsewhere && rm Cargo.toml` is judged as if `Cargo.toml` were the repository's, which blocks more, never less. Shell writes to a protected path are refused even before it is committed; write a gate you are still building with the edit tools.
 - **clippy reports the resolved path of a banned call** (`tokio::task::spawn`, not `tokio::spawn`). A fixture's expected text must name the resolved path.
-- **An `async fn` impl with nothing to await is refused** (`unused_async_trait_impl`). Return `std::future::ready(..)` from a plain `fn` instead.
 - **A test in one layer cannot name another layer's types it may not depend on.** Use the fakes from that layer's `testing` module (`features = ["test-support"]` on the dev-dependency).
 - **`doc_markdown` wants backticks** around identifiers in doc comments, such as `no_std` or `CreateNote`.
 - **Cargo treats a `members` glob that matches nothing as a literal path** and fails to load the workspace.

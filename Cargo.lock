@@ -527,6 +527,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "monitor-application"
+version = "0.1.0"
+dependencies = [
+ "monitor-domain",
+ "platform-clock",
+ "thiserror",
+ "tracing",
+]
+
+[[package]]
 name = "monitor-domain"
 version = "0.1.0"
 dependencies = [
