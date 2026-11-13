@@ -6,17 +6,20 @@ use std::time::{Duration, Instant};
 use monitor_application::{
     OverlayFrame, OverlayStyle, SamplerControl, Settings, SettingsStore, blank_frame, overlay_style,
 };
+use platform_win32::dialog::DialogChange;
 use platform_win32::foreground::ForegroundWindow;
 use platform_win32::menu::{MenuItem, show_popup_menu};
 use platform_win32::tray::TrayIcon;
 use platform_win32::ui::{Flow, MessageWindow, UiEvent};
 
 use crate::OverlayView;
+use crate::settings_window::{SettingsWindow, WindowOutcome, keep_live_view_state};
 use crate::shortcuts::{LOCK_HOTKEY, SHOW_HIDE_HOTKEY, Shortcuts};
 
 const SHOW_OVERLAY: u16 = 1;
 const EXIT: u16 = 2;
 const LOCK: u16 = 3;
+const SETTINGS: u16 = 4;
 
 /// Whether the overlay is shown and whether it is locked in place, the facts the events and commands depend on.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -45,6 +48,8 @@ pub enum Action {
     ReaddTrayIcon,
     /// Blank the overlay when the sampler has gone quiet.
     CheckStalled,
+    /// Open the settings window, or bring the open one to the front.
+    OpenSettings,
     Exit,
 }
 
@@ -67,6 +72,7 @@ impl UiState {
         match id {
             SHOW_OVERLAY => self.toggle(),
             LOCK => self.toggle_lock(),
+            SETTINGS => vec![Action::OpenSettings],
             EXIT => vec![Action::Exit],
             _ => Vec::new(),
         }
@@ -103,6 +109,11 @@ pub fn menu_items(state: &UiState) -> Vec<MenuItem> {
             checked: state.locked,
         },
         MenuItem {
+            id: SETTINGS,
+            text: String::from("Settings\u{2026}"),
+            checked: false,
+        },
+        MenuItem {
             id: EXIT,
             text: String::from("Exit"),
             checked: false,
@@ -111,9 +122,9 @@ pub fn menu_items(state: &UiState) -> Vec<MenuItem> {
 }
 
 /// Whether the window that was in front before the menu opened gets the focus back, given what was chosen (`None`
-/// when the menu was dismissed). Every choice does for now.
-pub fn restore_focus_after(_command: Option<u16>) -> bool {
-    true
+/// when the menu was dismissed). Settings… keeps it, for the settings window it opens in front.
+pub fn restore_focus_after(command: Option<u16>) -> bool {
+    command != Some(SETTINGS)
 }
 
 /// Whether more than three update intervals passed since the last frame, so the numbers on screen are old.
@@ -146,6 +157,8 @@ pub struct UiParts {
     pub sampler: Sender<SamplerControl>,
     pub settings: Settings,
     pub store: Box<dyn SettingsStore>,
+    /// The GPU adapters the settings window offers, in the order Windows lists them.
+    pub gpu_names: Vec<String>,
 }
 
 /// The UI thread's state: the overlay, the tray icon, the sampler's frames, and the settings.
@@ -155,8 +168,8 @@ pub struct Ui {
     tray: TrayIcon,
     view: OverlayView,
     frames: Receiver<OverlayFrame>,
-    /// Held so that dropping the `Ui` is what tells the sampler to stop; settings changes will be sent through it.
-    _sampler: Sender<SamplerControl>,
+    /// Carries settings changes to the sampler; dropping the `Ui` drops it, which tells the sampler to stop.
+    sampler: Sender<SamplerControl>,
     /// Held so the shortcuts stay registered until the `Ui` is dropped.
     _shortcuts: Shortcuts,
     settings: Settings,
@@ -168,6 +181,8 @@ pub struct Ui {
     last_frame: Instant,
     draw_errors: ErrorLog,
     tray_errors: ErrorLog,
+    gpu_names: Vec<String>,
+    settings_window: Option<SettingsWindow>,
 }
 
 impl Ui {
@@ -181,6 +196,7 @@ impl Ui {
             sampler,
             mut settings,
             store,
+            gpu_names,
         } = parts;
         let shortcuts = Shortcuts::register(window, &settings);
         // A locked overlay can only be unlocked from the tray menu or by its shortcut; without the shortcut it starts
@@ -205,7 +221,7 @@ impl Ui {
             tray,
             view,
             frames,
-            _sampler: sampler,
+            sampler,
             _shortcuts: shortcuts,
             style: overlay_style(&settings),
             settings,
@@ -214,6 +230,8 @@ impl Ui {
             last_frame: Instant::now(),
             draw_errors: ErrorLog::default(),
             tray_errors: ErrorLog::default(),
+            gpu_names,
+            settings_window: None,
         };
         if lock_dropped {
             ui.save_settings();
@@ -235,6 +253,10 @@ impl Ui {
         // Whether or not the overlay is shown, so frames sent while it is hidden do not pile up.
         if event == UiEvent::Wake {
             self.take_frames();
+        }
+        if let UiEvent::Dialog { control, change } = event {
+            self.on_settings_event(window, control, change);
+            return Flow::Continue;
         }
         let actions = self.state.on_event(event);
         self.apply(window, actions)
@@ -259,6 +281,7 @@ impl Ui {
             Action::RememberPosition => self.remember_position(),
             Action::SaveSettings => self.save_settings(),
             Action::SetLocked(locked) => self.set_locked(locked),
+            Action::OpenSettings => self.open_settings(window),
             Action::ShowMenu { x, y } => return self.choose_from_menu(window, x, y),
             Action::Exit => return Flow::Exit,
         }
@@ -300,13 +323,67 @@ impl Ui {
         self.save_settings();
     }
 
-    /// A failed save is logged and the app carries on with what it has in memory.
+    /// A failed save is logged and the app carries on with what it has in memory. While the settings window is open,
+    /// its previews are not kept yet, so the save holds the settings it opened with and only the overlay's own state.
     fn save_settings(&mut self) {
         self.settings.visible = self.state.visible;
         self.settings.locked = self.state.locked;
-        if let Err(error) = self.store.save(&self.settings) {
+        let kept = self.settings_window.as_ref().map_or_else(
+            || self.settings.clone(),
+            |open| keep_live_view_state(open.original().clone(), &self.settings),
+        );
+        if let Err(error) = self.store.save(&kept) {
             tracing::warn!(?error, "the settings could not be saved");
         }
+    }
+
+    fn open_settings(&mut self, window: &MessageWindow) {
+        if let Some(open) = &self.settings_window {
+            open.bring_to_front();
+            return;
+        }
+        match SettingsWindow::open(window, &self.settings, &self.gpu_names) {
+            Ok(opened) => self.settings_window = Some(opened),
+            Err(error) => tracing::warn!(?error, "the settings window could not be opened"),
+        }
+    }
+
+    /// OK keeps and saves the edited settings; Cancel goes back to the ones the window opened with and saves nothing.
+    /// Either closes the window first, so the save sees no window open.
+    fn on_settings_event(&mut self, window: &MessageWindow, control: u16, change: DialogChange) {
+        let Some(open) = self.settings_window.as_mut() else {
+            return;
+        };
+        match open.on_event(control, change) {
+            WindowOutcome::Nothing => {}
+            WindowOutcome::Preview(edited) => self.follow(window, edited),
+            WindowOutcome::Finished(edited) => {
+                self.settings_window = None;
+                self.follow(window, edited);
+                self.save_settings();
+            }
+            WindowOutcome::Cancelled(original) => {
+                self.settings_window = None;
+                self.follow(window, original);
+            }
+        }
+    }
+
+    /// Draws, samples, and checks for a stall by `settings`, keeping the overlay where and as it is now.
+    fn follow(&mut self, window: &MessageWindow, settings: Settings) {
+        let next = keep_live_view_state(settings, &self.settings);
+        if next == self.settings {
+            return;
+        }
+        self.settings = next;
+        self.style = overlay_style(&self.settings);
+        if self.sampler.send(SamplerControl::Apply(self.settings.clone())).is_err() {
+            tracing::warn!("the sampler has stopped, so the overlay keeps its last lines");
+        }
+        if let Err(error) = window.set_tick(self.settings.update_interval) {
+            tracing::warn!(?error, "the stall check keeps its old interval");
+        }
+        self.draw_latest();
     }
 
     fn readd_tray_icon(&mut self) {

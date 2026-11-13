@@ -92,7 +92,9 @@ pub fn run() -> ExitCode {
     let store: Box<dyn SettingsStore> = Box::new(TomlSettingsStore::new(settings_file()));
     // Task 15 detects the memory; until then the DDR5 layout is the default.
     let settings = load_settings(store.as_ref(), MemoryKind::Ddr5);
-    let mut gpus = AdapterSensors::new(listed_adapters());
+    let adapters = listed_adapters();
+    let gpu_names = adapters.iter().map(|adapter| adapter.name.clone()).collect();
+    let mut gpus = AdapterSensors::new(adapters);
     let gpu = gpus.open(settings.gpu.as_deref());
     let trace = start_frame_trace();
     let counter = FrameCounter::new();
@@ -101,7 +103,7 @@ pub fn run() -> ExitCode {
         sensors.fps = unavailable(FPS_NEEDS_ADMIN);
     }
     let sampler = Sampler::new(sensors, Box::new(gpus), SystemClock, &settings);
-    match show_overlay(sampler, settings, store, trace, &counter) {
+    match show_overlay(sampler, settings, store, gpu_names, trace, &counter) {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             tracing::error!(?error, "open the overlay");
@@ -171,6 +173,7 @@ fn show_overlay(
     mut sampler: Sampler<SystemClock>,
     settings: Settings,
     store: Box<dyn SettingsStore>,
+    gpu_names: Vec<String>,
     trace: Option<(TraceSession, TraceConsumer)>,
     counter: &FrameCounter,
 ) -> Result<(), OpenError> {
@@ -195,6 +198,7 @@ fn show_overlay(
             sampler: control,
             settings,
             store,
+            gpu_names,
         },
     );
     let waker = window.waker();

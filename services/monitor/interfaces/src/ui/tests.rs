@@ -2,8 +2,8 @@ use std::sync::mpsc::{TryRecvError, channel};
 use std::time::{Duration, Instant};
 
 use monitor_application::testing::MemoryStore;
-use monitor_application::{OverlayFrame, SamplerControl, Settings, ShortcutKeys};
-use platform_win32::dialog::DialogChange;
+use monitor_application::{OverlayFrame, SamplerControl, Settings, ShortcutKeys, overlay_style};
+use platform_win32::dialog::{Dialog, DialogChange};
 use platform_win32::hotkey::Hotkey;
 use platform_win32::icon::Icon;
 use platform_win32::overlay::OverlayWindow;
@@ -13,7 +13,7 @@ use platform_win32::ui::{Flow, MessageWindow, UiEvent};
 use crate::{OverlayView, hotkey_keys};
 
 use super::{
-    Action, ErrorLog, LOCK_HOTKEY, SHOW_HIDE_HOTKEY, Ui, UiParts, UiState, frames_stalled, menu_items,
+    Action, ErrorLog, LOCK_HOTKEY, SETTINGS, SHOW_HIDE_HOTKEY, Ui, UiParts, UiState, frames_stalled, menu_items,
     restore_focus_after,
 };
 
@@ -59,7 +59,7 @@ fn both_menus_open_at_the_pointer() {
 }
 
 #[test]
-fn the_menu_shows_a_check_while_visible_and_offers_exit() {
+fn the_menu_offers_settings() {
     let items = menu_items(&UiState {
         visible: true,
         locked: false,
@@ -72,6 +72,7 @@ fn the_menu_shows_a_check_while_visible_and_offers_exit() {
         vec![
             (1, "Show overlay", true),
             (3, "Lock position", false),
+            (4, "Settings\u{2026}", false),
             (2, "Exit", false)
         ]
     );
@@ -207,6 +208,7 @@ fn rig_on(window: MessageWindow, settings: Settings, store: MemoryStore) -> Rig 
             sampler,
             settings,
             store: Box::new(store.clone()),
+            gpu_names: vec!["First GPU".to_owned(), "Second GPU".to_owned()],
         },
     );
     Rig {
@@ -381,6 +383,7 @@ fn the_menu_shows_both_checks() {
         vec![
             (1, "Show overlay", true),
             (3, "Lock position", true),
+            (4, "Settings\u{2026}", false),
             (2, "Exit", false)
         ]
     );
@@ -390,6 +393,17 @@ fn the_menu_shows_both_checks() {
 fn focus_goes_back_after_the_menu_closes() {
     assert!(restore_focus_after(None));
     assert!(restore_focus_after(Some(1)));
+}
+
+#[test]
+fn opening_settings_keeps_the_focus_on_the_settings_window() {
+    let mut s = UiState {
+        visible: true,
+        locked: false,
+    };
+
+    assert!(!restore_focus_after(Some(SETTINGS)));
+    assert_eq!(s.on_command(SETTINGS), vec![Action::OpenSettings]);
 }
 
 #[test]
@@ -451,4 +465,146 @@ fn an_ending_session_exits() {
     };
 
     assert_eq!(s.on_event(UiEvent::SessionEnding), vec![Action::Exit]);
+}
+
+/// Settings whose shortcuts (Ctrl+Alt+Shift+F21 and F22) neither the owner's running app nor the other tests' keys
+/// (F20, F23, F24) use.
+fn settings_with_rare_shortcuts(visible: bool) -> Settings {
+    let rare = |key| ShortcutKeys {
+        ctrl: true,
+        shift: true,
+        alt: true,
+        key,
+    };
+    Settings {
+        visible,
+        show_hide: rare(0x84),
+        lock_unlock: rare(0x85),
+        ..Settings::default()
+    }
+}
+
+/// Chooses Settings… from the menu.
+fn open_settings(rig: &mut Rig) {
+    let actions = rig.ui.state.on_command(SETTINGS);
+    rig.ui.apply(&rig.window, actions);
+}
+
+fn dialog(ui: &Ui) -> &Dialog {
+    ui.settings_window
+        .as_ref()
+        .expect("the settings window is open")
+        .dialog()
+}
+
+fn user_did(rig: &mut Rig, control: u16, change: DialogChange) {
+    rig.ui.handle(&rig.window, UiEvent::Dialog { control, change });
+}
+
+/// Every set of settings the sampler was told to follow since the last call.
+fn applied(rig: &Rig) -> Vec<Settings> {
+    rig.controls
+        .try_iter()
+        .map(|SamplerControl::Apply(settings)| settings)
+        .collect()
+}
+
+#[test]
+fn cancel_after_previews_restores_the_overlay_and_the_sampler() {
+    let original = settings_with_rare_shortcuts(false);
+    let mut rig = rig(original.clone(), MemoryStore::empty());
+    let saves_before = rig.store.saved().len();
+    open_settings(&mut rig);
+    let choices = ["Automatic (most video memory)", "First GPU", "Second GPU"].map(str::to_owned);
+    dialog(&rig.ui).set_choices(220, &choices, 1);
+    user_did(&mut rig, 220, DialogChange::Selected);
+    dialog(&rig.ui).set_text(221, "2");
+    user_did(&mut rig, 221, DialogChange::Edited);
+    dialog(&rig.ui).set_checked(201, false);
+    user_did(&mut rig, 201, DialogChange::Clicked);
+    let previewed = applied(&rig);
+    let last_preview = previewed.last().expect("the previews reached the sampler");
+    assert_eq!(
+        (
+            last_preview.gpu.as_deref(),
+            last_preview.update_interval,
+            last_preview.lines[0].enabled
+        ),
+        (Some("First GPU"), Duration::from_secs(2), false)
+    );
+
+    user_did(&mut rig, 2, DialogChange::Clicked);
+
+    assert_eq!(
+        applied(&rig),
+        std::slice::from_ref(&original),
+        "the sampler follows the original again"
+    );
+    assert_eq!(rig.ui.settings, original);
+    assert_eq!(rig.ui.style, overlay_style(&original), "the overlay is drawn as before");
+    assert_eq!(rig.store.saved().len(), saves_before, "a cancel saves nothing");
+    assert!(rig.ui.settings_window.is_none(), "the window closed");
+}
+
+#[test]
+fn ok_saves_and_closes() {
+    let mut rig = rig(settings_with_rare_shortcuts(false), MemoryStore::empty());
+    open_settings(&mut rig);
+    dialog(&rig.ui).set_text(211, "Frames");
+    user_did(&mut rig, 211, DialogChange::Edited);
+
+    user_did(&mut rig, 1, DialogChange::Clicked);
+
+    assert!(rig.ui.settings_window.is_none(), "the window closed");
+    assert_eq!(rig.ui.settings.lines[0].label, "Frames");
+    assert_eq!(
+        rig.store.saved().last().map(|saved| saved.lines[0].label.clone()),
+        Some("Frames".to_owned())
+    );
+}
+
+#[test]
+fn ok_keeps_a_visibility_change_made_while_the_window_was_open() {
+    let mut rig = rig(settings_with_rare_shortcuts(true), MemoryStore::empty());
+    open_settings(&mut rig);
+    rig.ui.handle(&rig.window, UiEvent::TrayClick);
+    let saves_before = rig.store.saved().len();
+
+    user_did(&mut rig, 1, DialogChange::Clicked);
+
+    let saved = rig.store.saved();
+    assert_eq!(saved.len(), saves_before + 1, "OK saves");
+    assert_eq!(saved.last().map(|settings| settings.visible), Some(false));
+}
+
+#[test]
+fn a_save_while_the_window_is_open_keeps_the_previews_out() {
+    let original = settings_with_rare_shortcuts(true);
+    let mut rig = rig(original.clone(), MemoryStore::empty());
+    open_settings(&mut rig);
+    dialog(&rig.ui).set_text(221, "2");
+    user_did(&mut rig, 221, DialogChange::Edited);
+
+    rig.ui.handle(&rig.window, UiEvent::TrayClick);
+
+    assert_eq!(
+        rig.store
+            .saved()
+            .last()
+            .map(|saved| (saved.update_interval, saved.visible)),
+        Some((original.update_interval, false)),
+        "only the visibility is saved before OK"
+    );
+}
+
+#[test]
+fn opening_settings_again_keeps_the_open_window() {
+    let mut rig = rig(settings_with_rare_shortcuts(false), MemoryStore::empty());
+    open_settings(&mut rig);
+    dialog(&rig.ui).set_text(221, "2");
+    user_did(&mut rig, 221, DialogChange::Edited);
+
+    open_settings(&mut rig);
+
+    assert_eq!(dialog(&rig.ui).text(221), "2", "a new window would show the saved 1.0");
 }

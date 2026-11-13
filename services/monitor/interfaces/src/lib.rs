@@ -3,6 +3,7 @@
 
 mod overlay_view;
 mod settings_editor;
+mod settings_window;
 mod shortcuts;
 mod ui;
 

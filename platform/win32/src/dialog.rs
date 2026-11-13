@@ -9,13 +9,20 @@ use std::rc::Rc;
 use std::sync::Once;
 
 use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, WPARAM};
-use windows::Win32::Graphics::Gdi::{CreateSolidBrush, DeleteObject, HBRUSH, HGDIOBJ, InvalidateRect};
+use windows::Win32::Graphics::Gdi::{
+    CreateSolidBrush, DEFAULT_CHARSET, DeleteObject, FW_BOLD, FW_NORMAL, GetDC, GetDeviceCaps, HBRUSH, HGDIOBJ,
+    InvalidateRect, LOGFONTW, LOGPIXELSY, ReleaseDC,
+};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+use windows::Win32::UI::Controls::Dialogs::{
+    CC_FULLOPEN, CC_RGBINIT, CF_INITTOLOGFONTSTRUCT, CF_LIMITSIZE, CF_SCREENFONTS, CHOOSECOLORW, CHOOSEFONTW,
+    ChooseColorW, ChooseFontW,
+};
 use windows::Win32::UI::Controls::{
     HKCOMB_NONE, HKCOMB_S, HKM_GETHOTKEY, HKM_SETHOTKEY, HKM_SETRULES, HOTKEYF_ALT, HOTKEYF_CONTROL, HOTKEYF_SHIFT,
     ICC_HOTKEY_CLASS, INITCOMMONCONTROLSEX, InitCommonControlsEx,
 };
-use windows::Win32::UI::Input::KeyboardAndMouse::EnableWindow;
+use windows::Win32::UI::Input::KeyboardAndMouse::{EnableWindow, IsWindowEnabled};
 use windows::Win32::UI::WindowsAndMessaging::{
     BM_GETCHECK, BM_SETCHECK, BN_CLICKED, BS_AUTOCHECKBOX, BS_DEFPUSHBUTTON, BS_GROUPBOX, BS_PUSHBUTTON, CB_ADDSTRING,
     CB_ERR, CB_GETCURSEL, CB_RESETCONTENT, CB_SETCURSEL, CBN_SELCHANGE, CBS_DROPDOWNLIST, CreateDialogIndirectParamW,
@@ -106,6 +113,14 @@ const DIALOG_STYLE: u32 =
 const CANCEL_ID: u16 = 2;
 const FONT_POINTS: u16 = 9;
 const FONT_FAMILY: &str = "Segoe UI";
+/// The font picker's size limits, in points.
+const SMALLEST_FONT_PT: i32 = 6;
+const LARGEST_FONT_PT: i32 = 72;
+/// `FW_SEMIBOLD`: a face this heavy draws as bold, so the overlay's bold-or-not keeps it heavy.
+const BOLD_FROM_WEIGHT: i32 = 600;
+const POINTS_PER_INCH: f32 = 72.0;
+/// What a screen reports when Windows cannot say.
+const DEFAULT_DPI: i32 = 96;
 
 enum Class {
     Atom(u16),
@@ -219,6 +234,8 @@ pub struct Dialog {
     window: HWND,
     state: Box<State>,
     queue: Rc<Queue>,
+    /// The colour picker's 16 custom colours, which Windows leaves to the caller to keep between pickers.
+    custom_colours: Cell<[COLORREF; 16]>,
 }
 
 fn init_common_controls() {
@@ -273,7 +290,13 @@ impl Dialog {
                 LPARAM(ptr::from_ref::<State>(&state).expose_provenance().cast_signed()),
             )
         }?;
-        let dialog = Self { window, state, queue };
+        let dialog = Self {
+            window,
+            state,
+            queue,
+            // White, which is what the picker shows in an unused slot.
+            custom_colours: Cell::new([COLORREF(0x00FF_FFFF); 16]),
+        };
         dialog.queue.set_dialog(Some(window));
         for item in template.items.iter().filter(|item| item.kind == ItemKind::HotKey) {
             dialog.limit_hotkey_field(item.id);
@@ -418,7 +441,7 @@ impl Dialog {
         let Some(control) = self.control(id) else {
             return;
         };
-        let colour = COLORREF(((rgb & 0xFF) << 16) | (rgb & 0xFF00) | ((rgb >> 16) & 0xFF));
+        let colour = COLORREF(colorref_from_rgb(rgb));
         // SAFETY: no preconditions; the brush is kept in the state and deleted when replaced or dropped.
         let brush = unsafe { CreateSolidBrush(colour) };
         if let Some((_, old)) = self.state.swatches.borrow_mut().insert(id, (colour.0, brush)) {
@@ -446,6 +469,115 @@ impl Dialog {
             SetForegroundWindow(self.window).as_bool();
         }
     }
+
+    pub fn is_enabled(&self, id: u16) -> bool {
+        // SAFETY: the control is alive.
+        self.control(id)
+            .is_some_and(|control| unsafe { IsWindowEnabled(control) }.as_bool())
+    }
+
+    /// Opens Windows' font picker at `current`, over this dialog until it closes; `None` when the user cancels it.
+    pub fn choose_font(&self, current: &FontChoice) -> Option<FontChoice> {
+        let mut font = LOGFONTW {
+            lfHeight: logfont_height(current.size_pt, screen_dpi()),
+            lfWeight: if current.bold { FW_BOLD.0 } else { FW_NORMAL.0 }.cast_signed(),
+            lfItalic: u8::from(current.italic),
+            lfCharSet: DEFAULT_CHARSET,
+            ..LOGFONTW::default()
+        };
+        // The last unit stays 0, so a long name is cut rather than left unterminated.
+        let room = font.lfFaceName.len() - 1;
+        for (slot, unit) in font.lfFaceName.iter_mut().take(room).zip(current.family.encode_utf16()) {
+            *slot = unit;
+        }
+        let mut request = CHOOSEFONTW {
+            lStructSize: u32::try_from(size_of::<CHOOSEFONTW>()).unwrap_or(u32::MAX),
+            hwndOwner: self.window,
+            lpLogFont: &raw mut font,
+            Flags: CF_INITTOLOGFONTSTRUCT | CF_SCREENFONTS | CF_LIMITSIZE,
+            nSizeMin: SMALLEST_FONT_PT,
+            nSizeMax: LARGEST_FONT_PT,
+            ..CHOOSEFONTW::default()
+        };
+        // SAFETY: `request` and the `font` it points to are live locals for the whole call, which is modal and returns
+        // only once the picker is closed.
+        if !unsafe { ChooseFontW(&raw mut request) }.as_bool() {
+            return None;
+        }
+        let length = font.lfFaceName.iter().position(|unit| *unit == 0).unwrap_or(room);
+        let face = String::from_utf16_lossy(font.lfFaceName.get(..length).unwrap_or_default());
+        Some(font_from_logfont(
+            &face,
+            font.lfWeight,
+            font.lfItalic != 0,
+            request.iPointSize,
+        ))
+    }
+
+    /// Opens Windows' colour picker at `current` (`0xRRGGBB`), over this dialog until it closes; `None` when the user
+    /// cancels it. The custom colours the user mixes are kept for the next picker this dialog opens.
+    pub fn choose_color(&self, current: u32) -> Option<u32> {
+        let mut custom = self.custom_colours.get();
+        let mut request = CHOOSECOLORW {
+            lStructSize: u32::try_from(size_of::<CHOOSECOLORW>()).unwrap_or(u32::MAX),
+            hwndOwner: self.window,
+            rgbResult: COLORREF(colorref_from_rgb(current)),
+            lpCustColors: custom.as_mut_ptr(),
+            Flags: CC_RGBINIT | CC_FULLOPEN,
+            ..CHOOSECOLORW::default()
+        };
+        // SAFETY: `request` and the 16 custom colours it points to are live locals for the whole call, which is modal
+        // and returns only once the picker is closed.
+        let chosen = unsafe { ChooseColorW(&raw mut request) }.as_bool();
+        self.custom_colours.set(custom);
+        chosen.then(|| rgb_from_colorref(request.rgbResult.0))
+    }
+}
+
+/// Red and blue swap places: the settings store `0xRRGGBB`, Windows a `COLORREF` of `0x00BBGGRR`.
+const fn swap_red_and_blue(colour: u32) -> u32 {
+    ((colour & 0xFF) << 16) | (colour & 0xFF00) | ((colour >> 16) & 0xFF)
+}
+
+pub const fn colorref_from_rgb(rgb: u32) -> u32 {
+    swap_red_and_blue(rgb)
+}
+
+pub const fn rgb_from_colorref(colorref: u32) -> u32 {
+    swap_red_and_blue(colorref)
+}
+
+/// What the font picker answered, as a [`FontChoice`]; semibold and heavier count as bold.
+pub fn font_from_logfont(face: &str, weight: i32, italic: bool, point_tenths: i32) -> FontChoice {
+    FontChoice {
+        family: face.to_owned(),
+        // Every size the picker allows fits in an i16, which converts to f32 exactly.
+        size_pt: f32::from(i16::try_from(point_tenths).unwrap_or(i16::MAX)) / 10.0,
+        bold: weight >= BOLD_FROM_WEIGHT,
+        italic,
+    }
+}
+
+/// A `LOGFONTW` height for `size_pt` on a screen of `dpi`: negative, so it is the character's height, not the cell's.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "a float-to-int `as` saturates, and a font's height in pixels is far below i32::MAX"
+)]
+fn logfont_height(size_pt: f32, dpi: i32) -> i32 {
+    let dpi = f32::from(i16::try_from(dpi).unwrap_or(i16::MAX));
+    -((size_pt * dpi / POINTS_PER_INCH).round() as i32)
+}
+
+/// The vertical DPI the font picker converts sizes with: the screen's.
+fn screen_dpi() -> i32 {
+    // SAFETY: the screen's DC is asked for, read, and given back here; a failure reads 0, which the fallback covers.
+    let dpi = unsafe {
+        let screen = GetDC(None);
+        let dpi = GetDeviceCaps(Some(screen), LOGPIXELSY);
+        ReleaseDC(None, screen);
+        dpi
+    };
+    if dpi > 0 { dpi } else { DEFAULT_DPI }
 }
 
 fn delete_brush(brush: HBRUSH) {

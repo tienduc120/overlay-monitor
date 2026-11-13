@@ -6,7 +6,10 @@ use windows::Win32::UI::WindowsAndMessaging::{
     BN_CLICKED, GetDlgItem, PostMessageW, SendMessageW, WM_CLOSE, WM_COMMAND, WM_KEYDOWN,
 };
 
-use super::{Dialog, DialogChange, DialogItem, DialogTemplate, ItemKind, encode_template};
+use super::{
+    Dialog, DialogChange, DialogItem, DialogTemplate, FontChoice, ItemKind, colorref_from_rgb, encode_template,
+    font_from_logfont, logfont_height, rgb_from_colorref,
+};
 use crate::hotkey::HotkeyKeys;
 use crate::ui::{Flow, MessageWindow, UiEvent, run_message_loop};
 
@@ -320,4 +323,44 @@ fn escape_goes_through_the_loop_as_a_cancel() {
             change: DialogChange::Clicked
         }]
     );
+}
+
+#[test]
+fn colours_swap_their_red_and_blue_bytes_for_colorref() {
+    assert_eq!(colorref_from_rgb(0x00FF_8000), 0x0000_80FF);
+    assert_eq!(rgb_from_colorref(0x0000_80FF), 0x00FF_8000);
+}
+
+#[test]
+fn a_logfont_reads_as_a_font_choice() {
+    let bold = font_from_logfont("Consolas", 700, false, 140);
+    let regular = font_from_logfont("Consolas", 400, false, 140);
+
+    assert_eq!(
+        bold,
+        FontChoice {
+            family: "Consolas".to_owned(),
+            size_pt: 14.0,
+            bold: true,
+            italic: false,
+        }
+    );
+    assert!(!regular.bold, "weight 400 is regular");
+}
+
+#[test]
+fn a_point_size_becomes_a_logfont_height_in_pixels() {
+    assert_eq!(logfont_height(14.0, 96), -19, "14 pt at 96 dpi is 18.7 px, rounded");
+    assert_eq!(logfont_height(9.0, 144), -18);
+}
+
+#[test]
+fn a_disabled_control_reads_back_as_disabled() {
+    let window = MessageWindow::create().unwrap();
+    let dialog = open_with(&window);
+
+    dialog.set_enabled(CHECK, false);
+
+    assert!(!dialog.is_enabled(CHECK));
+    assert!(dialog.is_enabled(EDIT));
 }
