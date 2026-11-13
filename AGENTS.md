@@ -100,3 +100,4 @@ Grow this by correction: when any tool gets something wrong, add the line.
 - **The agent's shell cannot elevate.**
 - **Launch the app with `Start-Process`**, because the guard refuses `cargo run` of an `-api` binary in the foreground.
 - **On Windows, a tool installed mid-session is not on the shell's PATH.** In PowerShell, reload it: `$env:Path = [Environment]::GetEnvironmentVariable('Path','User') + ';' + [Environment]::GetEnvironmentVariable('Path','Machine')`. In Git Bash use `/c/Users/...` paths, not `$USERPROFILE`.
+- **`XTASK_ALLOW_PROTECTED=1` must reach the process that starts Claude Code.** In VS Code, close every window first: `code` run while VS Code is open hands the folder to the running instance, and the variable never arrives. Check it in the session (`$env:XTASK_ALLOW_PROTECTED` prints `1`) before relying on it.

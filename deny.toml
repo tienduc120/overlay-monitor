@@ -32,7 +32,7 @@ allow-wildcard-paths = true
 highlight = "all"
 deny = [
   { crate = "anyhow", wrappers = ["xtask"], reason = "errors are typed values owned by the layer that raises them (ADR-0011); anyhow is for the tool only" },
-  { crate = "async-trait", reason = "ports use native async fn in traits with an explicit Send bound" },
+  { crate = "async-trait", reason = "ports are plain fn and the app has no async code (ADR-0014)" },
   { crate = "lazy_static", wrappers = ["sharded-slab"], reason = "use std::sync::LazyLock; sharded-slab (under tracing-subscriber) predates it" },
   { crate = "serde_yaml", reason = "deprecated and unmaintained" },
   { crate = "serde_yml", reason = "unsound and unmaintained (RUSTSEC-2025-0068)" },
