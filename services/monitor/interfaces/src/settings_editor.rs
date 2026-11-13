@@ -25,6 +25,29 @@ pub(crate) enum ShortcutSlot {
     LockUnlock,
 }
 
+impl ShortcutSlot {
+    const fn other(self) -> Self {
+        match self {
+            Self::ShowHide => Self::LockUnlock,
+            Self::LockUnlock => Self::ShowHide,
+        }
+    }
+
+    const fn keys_of(self, settings: &Settings) -> ShortcutKeys {
+        match self {
+            Self::ShowHide => settings.show_hide,
+            Self::LockUnlock => settings.lock_unlock,
+        }
+    }
+
+    const fn keys_in(self, settings: &mut Settings) -> &mut ShortcutKeys {
+        match self {
+            Self::ShowHide => &mut settings.show_hide,
+            Self::LockUnlock => &mut settings.lock_unlock,
+        }
+    }
+}
+
 /// Why a field's text or choice cannot be used; the `Display` text is what the window shows.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Problem {
@@ -71,6 +94,9 @@ enum Spot {
 pub(crate) struct SettingsEditor {
     original: Settings,
     edited: Settings,
+    /// What each shortcut field holds, refused or not. A clash is judged between these, so fixing either field clears
+    /// it; the edited settings keep only the last good keys.
+    typed: Settings,
     problems: BTreeMap<Spot, Problem>,
 }
 
@@ -101,6 +127,7 @@ impl SettingsEditor {
     pub(crate) fn new(current: Settings) -> Self {
         Self {
             original: current.clone(),
+            typed: current.clone(),
             edited: current,
             problems: BTreeMap::new(),
         }
@@ -232,12 +259,20 @@ impl SettingsEditor {
         store(&mut self.edited.gpu, name)
     }
 
+    /// Takes what one shortcut field holds, then judges the other field again: this edit may have made or ended a clash
+    /// between them.
     pub(crate) fn set_shortcut(&mut self, slot: ShortcutSlot, keys: ShortcutKeys) -> Change {
-        let place = Spot::Shortcut(slot);
-        let other = match slot {
-            ShortcutSlot::ShowHide => self.edited.lock_unlock,
-            ShortcutSlot::LockUnlock => self.edited.show_hide,
-        };
+        *slot.keys_in(&mut self.typed) = keys;
+        let change = self.judge_shortcut(slot);
+        // Only whether its problem still stands matters here, and `finish` reads that.
+        self.judge_shortcut(slot.other());
+        change
+    }
+
+    /// Keeps the keys the field holds when they are usable and differ from the other field's; else records why not.
+    fn judge_shortcut(&mut self, slot: ShortcutSlot) -> Change {
+        let keys = slot.keys_of(&self.typed);
+        let other = slot.other().keys_of(&self.typed);
         let refusal = if !keys.is_valid() {
             Some(Problem::NeedsCtrlOrAlt)
         } else if keys == other {
@@ -245,18 +280,13 @@ impl SettingsEditor {
         } else {
             None
         };
+        let place = Spot::Shortcut(slot);
         if let Some(problem) = refusal {
             self.problems.insert(place, problem);
             return Change::Invalid(problem);
         }
         self.problems.remove(&place);
-        store(
-            match slot {
-                ShortcutSlot::ShowHide => &mut self.edited.show_hide,
-                ShortcutSlot::LockUnlock => &mut self.edited.lock_unlock,
-            },
-            keys,
-        )
+        store(slot.keys_in(&mut self.edited), keys)
     }
 
     pub(crate) fn set_start_with_windows(&mut self, on: bool) -> Change {

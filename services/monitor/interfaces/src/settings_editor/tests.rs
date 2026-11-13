@@ -95,6 +95,45 @@ fn the_same_shortcut_for_both_is_refused() {
     );
 }
 
+fn ctrl_shift(key: u8) -> ShortcutKeys {
+    ShortcutKeys {
+        ctrl: true,
+        shift: true,
+        alt: false,
+        key,
+    }
+}
+
+#[test]
+fn fixing_the_other_side_of_a_clash_lets_ok_finish() {
+    let mut e = editor();
+    assert_eq!(
+        e.set_shortcut(ShortcutSlot::ShowHide, ctrl_shift(b'L')),
+        Change::Invalid(Problem::SameShortcut)
+    );
+
+    e.set_shortcut(ShortcutSlot::LockUnlock, ctrl_shift(b'K'));
+
+    assert_eq!(
+        e.finish().map(|s| (s.show_hide, s.lock_unlock)),
+        Ok((ctrl_shift(b'L'), ctrl_shift(b'K')))
+    );
+}
+
+#[test]
+fn a_clash_is_judged_between_what_both_fields_hold() {
+    let mut e = editor();
+    e.set_shortcut(ShortcutSlot::ShowHide, ctrl_shift(b'L'));
+
+    // Show/hide's field holds L and the edited settings still hold O; the fields differ, so nothing clashes.
+    e.set_shortcut(ShortcutSlot::LockUnlock, ctrl_shift(b'O'));
+
+    assert_eq!(
+        e.finish().map(|s| (s.show_hide, s.lock_unlock)),
+        Ok((ctrl_shift(b'L'), ctrl_shift(b'O')))
+    );
+}
+
 #[test]
 fn a_problem_left_unfixed_refuses_finish() {
     let mut e = editor();
