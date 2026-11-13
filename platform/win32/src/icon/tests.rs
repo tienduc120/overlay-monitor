@@ -9,16 +9,36 @@ use crate::icon::{Icon, WindowIcons, icon_sizes, pick_ico_image};
 
 const OWNER_ICON: &[u8] = include_bytes!("../../../../services/monitor/api/assets/icon.ico");
 
-/// The width of a PNG image, from its IHDR chunk.
-fn png_width(image: &[u8]) -> u32 {
-    assert_eq!(&image[..8], b"\x89PNG\r\n\x1a\n", "the image must be a PNG");
-    u32::from_be_bytes(image[16..20].try_into().unwrap())
+/// The width of an icon image: a PNG (the 256 px frame) from its IHDR chunk, or a classic DIB (every smaller frame,
+/// which Windows decodes without loading WIC) from its `BITMAPINFOHEADER`.
+fn image_width(image: &[u8]) -> u32 {
+    if image.starts_with(b"\x89PNG\r\n\x1a\n") {
+        u32::from_be_bytes(image[16..20].try_into().unwrap())
+    } else {
+        assert_eq!(
+            u32::from_le_bytes(image[..4].try_into().unwrap()),
+            40,
+            "the image must be a DIB"
+        );
+        u32::from_le_bytes(image[4..8].try_into().unwrap())
+    }
+}
+
+#[test]
+fn only_the_largest_frame_of_the_owners_icon_is_a_png() {
+    let is_png = |wanted| pick_ico_image(OWNER_ICON, wanted).unwrap().starts_with(b"\x89PNG");
+
+    assert!(
+        [16, 24, 32, 48, 64, 128].iter().all(|&px| !is_png(px)),
+        "small frames stay PNG-free"
+    );
+    assert!(is_png(256));
 }
 
 #[test]
 fn the_smallest_image_at_least_as_wide_as_wanted_is_picked() {
     let picked = [(16, 16), (20, 24), (40, 48), (300, 256)]
-        .map(|(wanted, _)| png_width(pick_ico_image(OWNER_ICON, wanted).expect("the owner's file has images")));
+        .map(|(wanted, _)| image_width(pick_ico_image(OWNER_ICON, wanted).expect("the owner's file has images")));
 
     assert_eq!(picked, [16, 24, 48, 256], "wanted 16, 20, 40, 300 px");
 }
