@@ -7,6 +7,8 @@ description: Use when adding or changing a use case or a port in a service's app
 
 A use case is one operation the service offers, in `application`. It orchestrates: rules live in the domain, storage behind a port. `services/monitor/application/src/sample.rs` is the shape to copy.
 
+The names in the examples below (`Note`, `NoteId`, `CreateNote`, `AlreadyExists`) are illustrative: they are not in this repository. `sample.rs` is the real use case to read.
+
 ## Shape
 
 1. **Command in, result and error out.** The command and result are plain values (`String`, numbers), so delivery never builds or reads a domain type. The error is the use case's own enum (skill: `handling-errors`).

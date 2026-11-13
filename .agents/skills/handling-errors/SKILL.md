@@ -7,6 +7,8 @@ description: Use when a function can fail, when adding a use-case outcome or an 
 
 Failure is a returned `Result`, and each layer owns the errors it raises. `services/monitor` shows the shape: `application/src/ports.rs` declares `ReadError`, the adapters in `infrastructure/src` return it, and `api/src/lib.rs` is where an outcome ends.
 
+The names in the examples below (`Note`, `NoteError`, `CreateNote`, `CreateNoteError`, `SaveError`) and the HTTP statuses are illustrative: they are not in this repository, which has no HTTP delivery. `ReadError` is the real port error to read; map an outcome to whatever the delivery layer shows.
+
 ## What each layer does
 
 | Layer | Declares | Does with an error |

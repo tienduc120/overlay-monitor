@@ -6,6 +6,19 @@ It is built on a copy of the owner's strict `rust-base`, so its rules are checke
 
 Read [AGENTS.md](AGENTS.md) first, then [docs/adr/](docs/adr/README.md).
 
+## Build and run
+
+Overlay Monitor runs on Windows 10 1809 or later, x64.
+
+- The CPU and DDR5 temperatures need the PawnIO driver installed ([pawnio.eu](https://pawnio.eu), version 2.1.0 or later) and the app running as administrator.
+- FPS needs administrator or membership in the "Performance Log Users" group.
+- GPU load and temperature and CPU and memory load need neither.
+- `cargo xtask modules` downloads the pinned PawnIO modules, checks their hashes, and copies them into `target/{debug,release}/modules`. They are LGPL-2.1 and never committed; see [Credits](#credits).
+- `cargo build -p monitor-api --release --features elevated` builds `target\release\overlay-monitor.exe`, whose manifest asks for administrator.
+- Without `--features elevated` the exe runs as the invoking user, which is the default for development and tests; the CPU and DDR5 temperatures then show "—".
+
+A value that is missing or unreadable shows "—". The tray icon shows or hides the overlay, and its menu exits the app. Drag the overlay anywhere; it snaps to monitor edges.
+
 ## Quick start
 
 You need rustup (it reads `rust-toolchain.toml`), Git, and on Windows the Visual Studio Build Tools with the C++ workload.
@@ -43,6 +56,7 @@ This base stands on public work. Material that is copied or adapted is listed in
 - The Rust project: the language, cargo, rustfmt, clippy, and rustdoc.
 - Crates we depend on: [serde](https://github.com/serde-rs/serde), [thiserror](https://github.com/dtolnay/thiserror), [anyhow](https://github.com/dtolnay/anyhow), [tracing](https://github.com/tokio-rs/tracing), [jiff](https://github.com/BurntSushi/jiff), [clap](https://github.com/clap-rs/clap), [syn](https://github.com/dtolnay/syn), [cargo_metadata](https://github.com/oli-obk/cargo_metadata), [toml and toml_edit](https://github.com/toml-rs/toml), [walkdir](https://github.com/BurntSushi/walkdir), [serde_json](https://github.com/serde-rs/json), [embed-resource](https://github.com/nabijaczleweli/rust-embed-resource) (the exe icon), the [`windows`](https://github.com/microsoft/windows-rs) crate.
 - [PawnIO](https://github.com/namazso/PawnIO) and [PawnIO.Modules](https://github.com/namazso/PawnIO.Modules): the driver the app talks to, and the LGPL-2.1 modules shipped beside it, never committed.
+- The app icon (`services/monitor/api/assets/icon.ico`) is the owner's own work, made with Claude; it has no third-party source or license.
 - Developer tools we run, not copy: [cargo-nextest](https://github.com/nextest-rs/nextest), [cargo-deny](https://github.com/EmbarkStudios/cargo-deny) (Embark Studios), [cargo-shear](https://github.com/Boshen/cargo-shear), [typos](https://github.com/crate-ci/typos), [lefthook](https://github.com/evilmartians/lefthook) (Evil Martians), [cargo-binstall](https://github.com/cargo-bins/cargo-binstall), [zizmor](https://github.com/zizmorcore/zizmor), [taiki-e/install-action](https://github.com/taiki-e/install-action), [Swatinem/rust-cache](https://github.com/Swatinem/rust-cache).
 
 **Referenced for design** (no code copied)

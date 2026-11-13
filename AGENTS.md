@@ -51,9 +51,9 @@ One bounded context per service under `services/<name>/`, one crate per layer. A
 | --- | --- | --- |
 | `<svc>-domain` | nothing of ours | only `thiserror`, `jiff`; the crate is `#![no_std]`, so the compiler keeps I/O, threads, env, and the clock out (ADR-0006) |
 | `<svc>-application` | its domain, `platform-clock` | only `thiserror`, `tracing`, `jiff` |
-| `<svc>-infrastructure` | its domain and application, any platform | not `axum`, `tower-http`, `hyper`, `anyhow` |
-| `<svc>-interfaces` | its application, any platform | not `sqlx`, `anyhow` |
-| `<svc>-api` | its own layers, any platform | not `anyhow` |
+| `<svc>-infrastructure` | its domain and application, any platform | not `axum`, `tower-http`, `hyper`, `anyhow`, `windows` |
+| `<svc>-interfaces` | its application, any platform | not `sqlx`, `anyhow`, `windows` |
+| `<svc>-api` | its own layers, any platform | not `anyhow`, `windows` |
 | `platform-<name>` | other platform crates, never a service | not `anyhow` |
 | `platform-win32` | other platform crates | `windows`; the only crate with `unsafe` |
 
@@ -66,9 +66,9 @@ Enforced, each with a fixture:
 
 - **Layer rules** (`cargo xtask verify`, `architecture.toml`): the table above, `#![no_std]` in the domain, and every crate under `services/<svc>/<layer>`, `platform/<name>`, or `xtask`.
 - **Manifest policy**: `[lints] workspace = true`, package fields inherited from the workspace, the package named after where it lives, external versions only from the workspace.
-- **Source rules** (syn): aggregate shape, `restore` only in infrastructure, no `extern crate std` in a `no_std` crate, no inline test modules, no crate-wide `#![allow]`.
-- **Lints** (`Cargo.toml`, `clippy.toml`): clippy `all` and `pedantic` at deny, plus picked restriction lints: no `unwrap`/`expect`/`panic`/`todo`/indexing outside tests, no `println!`, no `mod.rs`, no wildcard arm on an enum, no `#[allow]`, no `unsafe`, functions under 80 lines, no lock guard across an `.await`, and the bans listed under Hard rules.
-- **Supply chain** (`deny.toml`, in `verify --full`): permissive licenses only, advisories, crates.io only, and banned crates (`anyhow` outside the tool, `async-trait`, `openssl`, deprecated YAML crates).
+- **Source rules** (syn): aggregate shape, `restore` only in infrastructure, no `extern crate std` in a `no_std` crate, no inline test modules, no crate-wide `#![allow]`, and `source-unsafe-scope` (an `unsafe_code` expectation outside `platform-win32`).
+- **Lints** (`Cargo.toml`, `clippy.toml`): clippy `all` and `pedantic` at deny, plus picked restriction lints: no `unwrap`/`expect`/`panic`/`todo`/indexing outside tests, no `println!`, no `mod.rs`, no wildcard arm on an enum, no `#[allow]`, no `unsafe` outside `platform-win32`, functions under 80 lines, and the bans listed under Hard rules.
+- **Supply chain** (`deny.toml`, in `verify --full`): permissive licenses only, advisories, crates.io only, and banned crates (`anyhow` outside the tool, `async-trait`, `lazy_static`, `openssl`, deprecated YAML crates).
 - **Tests**: nextest fails a test after two minutes and fails one that leaks a child process.
 
 ## Agent guard
