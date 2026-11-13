@@ -26,18 +26,18 @@ An existing test is the specification: change it only when the specification cha
 | Layer | Test with |
 | --- | --- |
 | domain | plain values; time as a `jiff::Timestamp` you build |
-| application | the fakes in its own `testing` module and `platform_clock::FixedClock`; `#[tokio::test]` |
+| application | the fakes in its own `testing` module and `platform_clock::FixedClock` |
 | infrastructure | the adapter itself, with a real backing store when there is one |
-| interfaces | the router called with `tower::ServiceExt::oneshot`, the use case built over the application's fakes (`features = ["test-support"]`) |
-| api | the assembled service on `127.0.0.1:0`, stopped by cancelling its token |
+| interfaces | the use case built over the application's fakes (`features = ["test-support"]`) |
+| api | the assembled app with fakes for the ports, stopped through its stop flag |
 
 A fake records what it was asked and answers with a programmed outcome; assert on what it recorded.
 
 ## Time and concurrency
 
 - Wall time comes from the clock port, so a test fixes it with `FixedClock`.
-- Tokio timers move under `#[tokio::test(start_paused = true)]`: a test waits on a timer, a channel, or a token, and the paused clock makes it instant.
-- Concurrent work in a test goes through `platform_task::Tasks`, and the test cancels and awaits it, so nothing outlives the test.
+- A test waits on a timer, a channel, or an event, never on `std::thread::sleep`.
+- Threads in a test start through `std::thread::scope`, so nothing outlives the test.
 
 ## Before you finish
 

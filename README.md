@@ -22,10 +22,9 @@ There is no Make. `cargo xtask` is the single command surface.
 ## Layout
 
 ```text
-services/<name>/{domain,application,infrastructure,interfaces,api}   one bounded context, one crate per layer
 services/monitor/{domain,application,infrastructure,interfaces,api}  the monitor service
-platform/{task,http,clock,win32}                                    shared technical crates, no business logic; win32 holds all unsafe
-xtask/                                                              gates, guard, generator; gate code in src/gates
+platform/{clock,win32}                                              shared technical crates, no business logic; win32 holds all unsafe
+xtask/                                                              gates, guard, tools; gate code in src/gates
 fixtures/{violations/<rule>,clean}                                  one failing fixture per rule, one compliant twin
 architecture.toml  clippy.toml  deny.toml  Cargo.toml               the rules
 docs/adr/  .agents/skills/                                          decisions and agent skills
@@ -42,7 +41,7 @@ This base stands on public work. Material that is copied or adapted is listed in
 **Used**
 
 - The Rust project: the language, cargo, rustfmt, clippy, and rustdoc.
-- Crates we depend on: [tokio](https://github.com/tokio-rs/tokio), tokio-util, [axum](https://github.com/tokio-rs/axum), [tower](https://github.com/tower-rs/tower), [tower-http](https://github.com/tower-rs/tower-http), [serde](https://github.com/serde-rs/serde), [thiserror](https://github.com/dtolnay/thiserror), [anyhow](https://github.com/dtolnay/anyhow), [tracing](https://github.com/tokio-rs/tracing), [jiff](https://github.com/BurntSushi/jiff), [clap](https://github.com/clap-rs/clap), [syn](https://github.com/dtolnay/syn), [cargo_metadata](https://github.com/oli-obk/cargo_metadata), [toml and toml_edit](https://github.com/toml-rs/toml), [walkdir](https://github.com/BurntSushi/walkdir), [serde_json](https://github.com/serde-rs/json), [http-body-util](https://github.com/hyperium/http-body), the [`windows`](https://github.com/microsoft/windows-rs) crate.
+- Crates we depend on: [serde](https://github.com/serde-rs/serde), [thiserror](https://github.com/dtolnay/thiserror), [anyhow](https://github.com/dtolnay/anyhow), [tracing](https://github.com/tokio-rs/tracing), [jiff](https://github.com/BurntSushi/jiff), [clap](https://github.com/clap-rs/clap), [syn](https://github.com/dtolnay/syn), [cargo_metadata](https://github.com/oli-obk/cargo_metadata), [toml and toml_edit](https://github.com/toml-rs/toml), [walkdir](https://github.com/BurntSushi/walkdir), [serde_json](https://github.com/serde-rs/json), [embed-resource](https://github.com/nabijaczleweli/rust-embed-resource) (the exe icon), the [`windows`](https://github.com/microsoft/windows-rs) crate.
 - [PawnIO](https://github.com/namazso/PawnIO) and [PawnIO.Modules](https://github.com/namazso/PawnIO.Modules): the driver the app talks to, and the LGPL-2.1 modules shipped beside it, never committed.
 - Developer tools we run, not copy: [cargo-nextest](https://github.com/nextest-rs/nextest), [cargo-deny](https://github.com/EmbarkStudios/cargo-deny) (Embark Studios), [cargo-shear](https://github.com/Boshen/cargo-shear), [typos](https://github.com/crate-ci/typos), [lefthook](https://github.com/evilmartians/lefthook) (Evil Martians), [cargo-binstall](https://github.com/cargo-bins/cargo-binstall), [zizmor](https://github.com/zizmorcore/zizmor), [taiki-e/install-action](https://github.com/taiki-e/install-action), [Swatinem/rust-cache](https://github.com/Swatinem/rust-cache).
 

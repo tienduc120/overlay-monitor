@@ -16,21 +16,14 @@ publish = false
 [workspace.dependencies]
 # Platform crates. Services reach shared technical code only through these.
 platform-clock = { path = "platform/clock" }
-platform-http = { path = "platform/http" }
-platform-task = { path = "platform/task" }
 platform-win32 = { path = "platform/win32" }
 
 # Runtime
 windows = "0.62.2"
-axum = { version = "0.8.9", default-features = false, features = ["http1", "json", "tokio"] }
 jiff = { version = "0.2.43", default-features = false }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
 thiserror = { version = "2.0.21", default-features = false }
-tokio = { version = "1.54.1", default-features = false }
-tokio-util = { version = "0.7.20", default-features = false }
-tower = { version = "0.5.3", default-features = false }
-tower-http = { version = "0.7.1", default-features = false }
 tracing = { version = "0.1.44", default-features = false, features = ["std", "attributes"] }
 tracing-subscriber = { version = "0.3.23", default-features = false, features = ["std", "fmt", "json", "env-filter"] }
 
@@ -44,8 +37,6 @@ toml = "1.2.1"
 toml_edit = "0.25.19"
 walkdir = "2.5.0"
 
-# Tests
-http-body-util = "0.1.3"
 
 [workspace.lints.rust]
 unsafe_code = "deny" # refused everywhere; only platform-win32 may expect it (ADR-0012, rule source-unsafe-scope)

@@ -4,7 +4,6 @@ mod doctor;
 mod gates;
 mod hook;
 mod modules;
-mod scaffold;
 
 use std::io::{self, Write as _};
 use std::path::{Path, PathBuf};
@@ -15,7 +14,7 @@ use clap::{Parser, Subcommand};
 #[derive(Parser)]
 #[command(
     name = "cargo xtask",
-    about = "The repository's single command surface: gates, guard, and generator."
+    about = "The repository's single command surface: gates, guard, and tools."
 )]
 struct Cli {
     #[command(subcommand)]
@@ -47,12 +46,6 @@ enum Cmd {
     Doctor,
     /// Download the pinned `PawnIO` modules, check their hashes, and copy them next to the debug and release builds.
     Modules,
-    /// Start a service by copying the witness services/example under a new name.
-    NewService {
-        name: String,
-        #[arg(long)]
-        aggregate: String,
-    },
 }
 
 fn main() -> ExitCode {
@@ -71,7 +64,6 @@ fn main() -> ExitCode {
         Cmd::Hook { event } => return hook::run(&root, &event),
         Cmd::Doctor => doctor::run(&root, &mut out),
         Cmd::Modules => modules::run(&root, &mut out),
-        Cmd::NewService { name, aggregate } => scaffold::new_service(&root, &name, &aggregate, &mut out).map(|()| true),
     };
     match result {
         Ok(true) => ExitCode::SUCCESS,

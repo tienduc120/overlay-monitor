@@ -15,33 +15,18 @@ allow-expect-in-tests = true
 allow-panic-in-tests = true
 allow-indexing-slicing-in-tests = true
 
-# A lock guard held across an await stalls every task waiting for it.
-await-holding-invalid-types = [
-  { path = "tokio::sync::MutexGuard", reason = "release the lock before awaiting; copy out what you need" },
-  { path = "tokio::sync::RwLockReadGuard", reason = "release the lock before awaiting; copy out what you need" },
-  { path = "tokio::sync::RwLockWriteGuard", reason = "release the lock before awaiting; copy out what you need" },
-]
-
 disallowed-methods = [
-  # Concurrency is supervised: a task nobody awaits is a leak, and its panic is lost.
-  { path = "tokio::spawn", reason = "run concurrent work through platform_task, which cancels, awaits, and reports panics" },
-  { path = "tokio::task::spawn", reason = "run concurrent work through platform_task, which cancels, awaits, and reports panics" },
-  { path = "tokio::task::spawn_blocking", reason = "run blocking work through platform_task (add a supervised helper there)" },
-  { path = "tokio::task::spawn_local", reason = "run concurrent work through platform_task, which cancels, awaits, and reports panics" },
-  { path = "tokio::task::JoinSet::spawn", reason = "run concurrent work through platform_task, which cancels, awaits, and reports panics" },
-  { path = "tokio::runtime::Handle::spawn", reason = "run concurrent work through platform_task, which cancels, awaits, and reports panics" },
-  { path = "tokio::runtime::Runtime::spawn", reason = "run concurrent work through platform_task, which cancels, awaits, and reports panics" },
-  { path = "std::thread::spawn", reason = "a detached thread outlives its caller; use std::thread::scope, or platform_task in async code" },
-  { path = "std::thread::Builder::spawn", reason = "a detached thread outlives its caller; use std::thread::scope, or platform_task in async code" },
+  # A detached thread outlives its caller and its panic is lost.
+  { path = "std::thread::spawn", reason = "a detached thread outlives its caller; use std::thread::scope" },
+  { path = "std::thread::Builder::spawn", reason = "a detached thread outlives its caller; use std::thread::scope" },
 
-  # Waiting on nothing hides a race; tests that need time use tokio::time::pause.
-  { path = "std::thread::sleep", reason = "wait on a timer, a channel, or a cancellation token; tests use tokio::time::pause" },
+  # Waiting on nothing hides a race.
+  { path = "std::thread::sleep", reason = "wait on a timer, a channel, or an event" },
 
-  # Time and cancellation come from the caller.
+  # Time comes from the caller.
   { path = "std::time::SystemTime::now", reason = "read time through the platform_clock::Clock port" },
   { path = "jiff::Timestamp::now", reason = "read time through the platform_clock::Clock port" },
   { path = "jiff::Zoned::now", reason = "read time through the platform_clock::Clock port" },
-  { path = "tokio_util::sync::CancellationToken::new", reason = "derive from the caller's token with child_token(); only a composition root makes a root token" },
 
   # Process-wide state is set once, in the composition root.
   { path = "std::process::exit", reason = "return an ExitCode from main so destructors run and logs flush" },
@@ -53,9 +38,6 @@ disallowed-methods = [
   { path = "tracing_subscriber::util::SubscriberInitExt::try_init", reason = "only a composition root installs the global subscriber" },
   { path = "tracing_subscriber::fmt::SubscriberBuilder::init", reason = "only a composition root installs the global subscriber" },
   { path = "tracing_subscriber::fmt::SubscriberBuilder::try_init", reason = "only a composition root installs the global subscriber" },
-
-  # A server with no timeouts is held open by the slowest client.
-  { path = "axum::serve", reason = "serve through platform_http::Server, which requires every timeout" },
 ]
 
 disallowed-macros = [

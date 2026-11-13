@@ -11,7 +11,7 @@ The gates catch what a tool can name: layer edges, lints, manifests, aggregate s
 2. **Names and shape.** A name says what the thing is for in the domain's words. A function does one thing at one level. A comment says why. A new `pub` item or dependency is an architectural change and is justified as one.
 3. **Layers.** Business rules live in the domain, use cases only orchestrate, adapters only translate, interfaces only map. A rule found in a handler or an adapter is in the wrong place. Time and ids arrive as values or through ports.
 4. **Failure.** Every error keeps its cause and is translated once at its boundary; only interfaces picks a status; nothing internal reaches a client (skill: `handling-errors`).
-5. **Effects and concurrency.** An effect that cannot be rolled back sits outside the writes that must agree; a retry cannot repeat it. Concurrent work goes through `platform-task`, every wait has a bound, and a lock guard is released before an `.await`.
+5. **Effects and concurrency.** An effect that cannot be rolled back sits outside the writes that must agree; a retry cannot repeat it. Threads start only through `std::thread::scope` (ADR-0014), every wait has a bound, and a lock guard is released before a blocking call.
 6. **Evidence.** The author names the commands they ran and what they printed, and what they skipped and why.
 
 ## Report

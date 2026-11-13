@@ -1,6 +1,6 @@
 # 0009 - Supervised tasks, the clock port, and the HTTP server
 
-- **Status**: accepted
+- **Status**: superseded in part by 0017
 - **Date**: 2026-11-12
 
 ## Context

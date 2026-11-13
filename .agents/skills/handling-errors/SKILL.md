@@ -5,7 +5,7 @@ description: Use when a function can fail, when adding a use-case outcome or an 
 
 # Handle errors
 
-Failure is a returned `Result`, and each layer owns the errors it raises. `services/example` shows the whole shape in four files: `domain/src/note.rs`, `application/src/ports.rs`, `application/src/create_note.rs`, `interfaces/src/rest.rs`.
+Failure is a returned `Result`, and each layer owns the errors it raises. `services/monitor` shows the shape: `application/src/ports.rs` declares `ReadError`, the adapters in `infrastructure/src` return it, and `api/src/lib.rs` is where an outcome ends.
 
 ## What each layer does
 

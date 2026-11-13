@@ -1,6 +1,6 @@
 # 0010 - The service generator copies the witness
 
-- **Status**: accepted
+- **Status**: superseded by 0017
 - **Date**: 2026-11-12
 
 ## Context

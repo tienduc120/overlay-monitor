@@ -1,3 +1,0 @@
-enforcer = "clippy"
-contains = "disallowed method `tokio_util::sync::CancellationToken::new`"
-doc = "cancellation is derived from the caller"

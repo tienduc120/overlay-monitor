@@ -21,7 +21,6 @@ Run from the repository root. There is no Make; `cargo xtask` is the command sur
 | Prove every rule fires on its fixture | `cargo xtask rules` |
 | Check the toolchain and pinned tools | `cargo xtask doctor` (prints the install command for anything missing) |
 | Install the git hooks (once per clone) | `lefthook install` |
-| Start a new service | `cargo xtask new-service <name> --aggregate <Name>` (skill: `new-service`) |
 | Download and hash-check the PawnIO modules into `target/{debug,release}/modules` | `cargo xtask modules` |
 | Check a commit message | `cargo xtask commitmsg <file>` (the commit-msg hook calls it) |
 | Format | `cargo fmt --all` |
@@ -30,9 +29,8 @@ Run from the repository root. There is no Make; `cargo xtask` is the command sur
 ## Hard rules
 
 - **Test first.** No production code without a test that failed first, for the right reason. Unit tests live in a sibling file (`#[cfg(test)] mod tests;` next to `<module>/tests.rs`), never inline. Follow the `writing-rust-tests` skill.
-- **Start a service with the generator.** `cargo xtask new-service` copies the witness `services/example` under a new name, so it starts green. Change `services/example` only when every future service should change, and keep it passing every gate.
 - **Errors are typed values owned by the layer that raises them.** `Result<T, E>` with a `thiserror` enum per operation; never panic for an expected failure; keep the cause as `#[source]`; only `interfaces` maps an outcome to a status, with an exhaustive `match`. `anyhow` is for the tool only. Follow the `handling-errors` skill (ADR-0011).
-- **Threads only through `std::thread::scope`; no async runtime (ADR-0014).** Serving only through `platform-http`, time only through `platform-clock`. clippy refuses `tokio::spawn`, `std::thread::spawn`, `std::thread::sleep`, `axum::serve`, `SystemTime::now`, `CancellationToken::new`, `std::env::var`, and `std::process::exit` everywhere else (ADR-0009).
+- **Threads only through `std::thread::scope`; no async runtime (ADR-0014).** Time only through `platform-clock`. clippy refuses `std::thread::spawn`, `std::thread::sleep`, `SystemTime::now`, `std::env::var`, and `std::process::exit` everywhere else (ADR-0009, ADR-0017).
 - **`unsafe` only in `platform-win32` (ADR-0012).** Wrap each call in a safe function with a `// SAFETY:` comment; the `source-unsafe-scope` rule refuses an `unsafe_code` expectation anywhere else.
 - **Suppress a lint only with `#[expect(lint, reason = "...")]` on the one item that needs it.** `#[allow]` and crate-wide `#![allow]` are refused. A suppression is debt: say so to the user.
 - **A new dependency is a decision, not an edit.** Versions live once in the root `Cargo.toml` (`[workspace.dependencies]`), which is protected; a member writes `{ workspace = true }`. Propose it with an ADR, and credit it in the README.
@@ -94,7 +92,7 @@ When you are blocked, fix the cause; do not look for another way to make the sam
 Grow this by correction: when any tool gets something wrong, add the line.
 
 - **The guard judges paths from the session's directory.** `cd elsewhere && rm Cargo.toml` is judged as if `Cargo.toml` were the repository's, which blocks more, never less. Shell writes to a protected path are refused even before it is committed; write a gate you are still building with the edit tools.
-- **clippy reports the resolved path of a banned call** (`tokio::task::spawn`, not `tokio::spawn`). A fixture's expected text must name the resolved path.
+- **clippy reports the resolved path of a banned call** (`std::thread::spawn`, not a re-export of it). A fixture's expected text must name the resolved path.
 - **A test in one layer cannot name another layer's types it may not depend on.** Use the fakes from that layer's `testing` module (`features = ["test-support"]` on the dev-dependency).
 - **`doc_markdown` wants backticks** around identifiers in doc comments, such as `no_std` or `CreateNote`.
 - **Cargo treats a `members` glob that matches nothing as a literal path** and fails to load the workspace.
