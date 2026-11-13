@@ -118,6 +118,13 @@ pub struct TraceSession {
     shutdown: Arc<Shutdown>,
 }
 
+/// Stops a running session from a thread that does not own it, while the owner waits in its consumer's `run`.
+#[derive(Clone, Debug)]
+pub struct SessionStopper {
+    handle: CONTROLTRACE_HANDLE,
+    shutdown: Arc<Shutdown>,
+}
+
 /// Reads one session's events.
 #[derive(Debug)]
 pub struct TraceConsumer {
@@ -243,16 +250,41 @@ impl TraceSession {
     /// The system refused to stop the session. The consumer's `run` still returns, because its trace is closed
     /// instead, and dropping the session tries to stop it again.
     pub fn stop(&self) -> Result<(), Win32Error> {
-        if self.shutdown.stopped.swap(true, Ordering::SeqCst) {
-            return Ok(());
-        }
-        let stopped = stop(self.handle, None);
-        if stopped.is_err() {
-            self.shutdown.stopped.store(false, Ordering::SeqCst);
-            self.shutdown.abandon();
-        }
-        stopped
+        stop_running(self.handle, &self.shutdown)
     }
+
+    /// What another thread stops this session with, so it can end the consumer's `run` that this one is in.
+    #[must_use]
+    pub fn stopper(&self) -> SessionStopper {
+        SessionStopper {
+            handle: self.handle,
+            shutdown: Arc::clone(&self.shutdown),
+        }
+    }
+}
+
+impl SessionStopper {
+    /// What [`TraceSession::stop`] does: the consumer's `run` returns even when the system refuses to stop the
+    /// session, and stopping a stopped session does nothing.
+    ///
+    /// # Errors
+    /// The system refused to stop the session; its consumer was abandoned instead.
+    pub fn stop(&self) -> Result<(), Win32Error> {
+        stop_running(self.handle, &self.shutdown)
+    }
+}
+
+/// Stops the session `handle` names once, whoever asks first; a refusal abandons its consumer, so `run` still returns.
+fn stop_running(handle: CONTROLTRACE_HANDLE, shutdown: &Shutdown) -> Result<(), Win32Error> {
+    if shutdown.stopped.swap(true, Ordering::SeqCst) {
+        return Ok(());
+    }
+    let stopped = stop(handle, None);
+    if stopped.is_err() {
+        shutdown.stopped.store(false, Ordering::SeqCst);
+        shutdown.abandon();
+    }
+    stopped
 }
 
 impl Drop for TraceSession {

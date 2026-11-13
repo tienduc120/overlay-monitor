@@ -2,15 +2,34 @@ use std::mem::offset_of;
 
 use windows::Win32::System::Diagnostics::Etw::EVENT_FILTER_EVENT_ID;
 
-use super::{EventIdFilter, TraceConsumer, TraceSession, start_session, stop_session, ticks_to_ns};
+use super::{EventIdFilter, SessionStopper, TraceConsumer, TraceSession, start_session, stop_session, ticks_to_ns};
 
 fn shared_across_threads<T: Send + Sync>() {}
 fn moved_across_threads<T: Send>() {}
+fn handed_to_other_threads<T: Clone + Send + Sync>() {}
 
 #[test]
 fn the_session_is_shared_and_the_consumer_moved_to_the_thread_that_runs_it() {
     shared_across_threads::<TraceSession>();
     moved_across_threads::<TraceConsumer>();
+    handed_to_other_threads::<SessionStopper>();
+}
+
+#[test]
+#[ignore = "needs an elevated terminal"]
+fn a_stopper_on_another_thread_ends_the_running_consumer() {
+    let (session, consumer) = start_session("OverlayMonitorStopperTest", &[]).unwrap();
+    let stopper = session.stopper();
+
+    let ran = std::thread::scope(|scope| {
+        let runner = scope.spawn(move || consumer.run(&mut |_| {}));
+        stopper.stop().unwrap();
+        runner.join().unwrap()
+    });
+
+    assert!(ran.is_ok(), "{ran:?}");
+    assert!(stopper.stop().is_ok(), "stopping a stopped session does nothing");
+    assert!(session.stop().is_ok(), "nor does the owner's stop after it");
 }
 
 #[test]

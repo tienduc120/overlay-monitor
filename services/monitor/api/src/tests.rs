@@ -1,6 +1,7 @@
 use std::cell::Cell;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc;
 use std::time::Duration;
 
@@ -8,13 +9,14 @@ use monitor_application::testing::{FakeGpuSensors, FakeSensor, FakeStartupTask};
 use monitor_application::{GpuPair, Line, ReadError, Sampler, Sensor, Sensors, Settings};
 use monitor_infrastructure::{FrameCounter, PRESENT_PROVIDERS, UnavailableSensor};
 use platform_clock::{FixedClock, Timestamp};
+use platform_win32::Win32Error;
 use platform_win32::etw::{start_session, stop_session};
 
 use monitor_application::StartupTask;
 
 use super::{
-    SamplerControl, UnavailableStartup, build_sensors, count_frames_until_stopped, modules_dir, refresh_startup_task,
-    sample_until_stopped, startup_failure_text, wait_to_restart,
+    FrameTrace, SamplerControl, StopTrace, UnavailableStartup, build_sensors, count_frames_until_stopped, modules_dir,
+    refresh_startup_task, sample_until_stopped, startup_failure_text, wait_to_restart,
 };
 
 fn fixed_sensors() -> Sensors {
@@ -231,41 +233,121 @@ fn without_a_log_folder_the_text_leaves_it_out() {
     );
 }
 
+/// Counts its stops, and refuses them when asked to, as a session the system will not stop does.
+#[derive(Clone, Default)]
+struct FakeStopper {
+    stops: Arc<AtomicUsize>,
+    refuses: bool,
+}
+
+impl FakeStopper {
+    fn refusing() -> Self {
+        Self {
+            refuses: true,
+            ..Self::default()
+        }
+    }
+
+    fn stops(&self) -> usize {
+        self.stops.load(Ordering::SeqCst)
+    }
+}
+
+impl StopTrace for FakeStopper {
+    fn stop(&self) -> Result<(), Win32Error> {
+        self.stops.fetch_add(1, Ordering::SeqCst);
+        if self.refuses {
+            Err(Win32Error::from_thread())
+        } else {
+            Ok(())
+        }
+    }
+}
+
+#[test]
+fn the_exit_stops_the_trace_that_is_running() {
+    let trace = FrameTrace::new();
+    let running = FakeStopper::default();
+    assert!(trace.begin(running.clone()), "nothing is stopping yet");
+
+    let stopped = trace.stop();
+    trace.end();
+
+    assert!(stopped.is_ok(), "{stopped:?}");
+    assert_eq!(running.stops(), 1);
+    assert!(trace.is_stopping(), "the run ending after the exit does not undo it");
+}
+
+#[test]
+fn a_trace_started_after_the_exit_is_never_run() {
+    let trace = FrameTrace::new();
+    trace.stop().unwrap();
+    let late = FakeStopper::default();
+
+    assert!(!trace.begin(late.clone()), "its thread must stop it instead");
+    assert_eq!(late.stops(), 0, "the exit had nothing to stop");
+}
+
+#[test]
+fn a_trace_that_already_ended_leaves_nothing_to_stop() {
+    let trace = FrameTrace::new();
+    let ended = FakeStopper::default();
+    trace.begin(ended.clone());
+    trace.end();
+
+    trace.stop().unwrap();
+
+    assert_eq!(ended.stops(), 0);
+}
+
+#[test]
+fn a_refused_stop_is_reported_and_the_trace_stays_stopped() {
+    let trace = FrameTrace::new();
+    trace.begin(FakeStopper::refusing());
+
+    let stopped = trace.stop();
+
+    assert!(stopped.is_err(), "the caller logs the refusal");
+    assert!(!trace.begin(FakeStopper::default()), "no later trace may run");
+}
+
 #[test]
 fn waiting_to_restart_ends_when_the_app_is_stopping_or_the_sender_is_gone() {
+    let (_sender, stop) = mpsc::channel::<()>();
+    let trace = FrameTrace::<FakeStopper>::new();
+    assert!(wait_to_restart(&stop, &trace, Duration::ZERO));
+
+    trace.stop().unwrap();
+    assert!(!wait_to_restart(&stop, &trace, Duration::ZERO));
+
     let (sender, stop) = mpsc::channel::<()>();
-    let stopping = AtomicBool::new(false);
-
-    assert!(wait_to_restart(&stop, &stopping, Duration::ZERO));
-
-    stopping.store(true, Ordering::SeqCst);
-    assert!(!wait_to_restart(&stop, &stopping, Duration::ZERO));
-
-    stopping.store(false, Ordering::SeqCst);
     drop(sender);
-    assert!(!wait_to_restart(&stop, &stopping, Duration::from_secs(60)));
+    assert!(!wait_to_restart(
+        &stop,
+        &FrameTrace::<FakeStopper>::new(),
+        Duration::from_secs(60)
+    ));
 }
 
 #[test]
 #[ignore = "needs an elevated terminal"]
-fn a_trace_stopped_from_outside_is_started_again() {
+fn a_trace_stopped_from_outside_is_started_again_and_the_exit_stops_the_new_one() {
     const NAME: &str = "OverlayMonitorRestartTest";
     let first = start_session(NAME, PRESENT_PROVIDERS).unwrap();
     let counter = FrameCounter::new();
-    let stopping = AtomicBool::new(false);
+    let trace = FrameTrace::new();
     let (sender, stop) = mpsc::channel::<()>();
 
     let runs = std::thread::scope(|scope| {
-        let stopping = &stopping;
+        let trace = &trace;
         let counter = &counter;
-        let worker = scope.spawn(move || count_frames_until_stopped(first, NAME, counter, stopping, &stop));
+        let worker = scope.spawn(move || count_frames_until_stopped(first, NAME, counter, trace, &stop));
         pause(Duration::from_millis(500));
         stop_session(NAME).unwrap();
-        // The restart waits 5 s; a second session shows up by name once it started.
+        // The restart waits 5 s; the second session then runs, and only its stopper ends it.
         pause(Duration::from_secs(7));
-        stopping.store(true, Ordering::SeqCst);
+        trace.stop().unwrap();
         drop(sender);
-        stop_session(NAME).unwrap();
         worker.join().unwrap()
     });
 
