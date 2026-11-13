@@ -11,7 +11,7 @@ use crate::{Extras, GpuSensors, ReadError, Sensor, Sensors, Settings};
 /// What the UI thread tells the sampler; it lives here, not in the root, because the delivery layer holds the sender.
 #[derive(Debug)]
 pub enum SamplerControl {
-    /// Follow these settings, and sample again at once.
+    /// Follow these settings, and draw the readings again in them at once.
     Apply(Settings),
     /// Answer with every reading as it stands, without sampling again.
     Report(Sender<Vec<ReadingReport>>),
@@ -22,6 +22,9 @@ pub enum SamplerControl {
 pub enum Outcome {
     #[default]
     NotYet,
+    /// The first read after start or after a GPU swap failed. Load and FPS need two reads, so the first only keeps a
+    /// baseline; a second failure is the real one.
+    WarmingUp(String),
     Value(f64),
     Unavailable(String),
     Failed(String),
@@ -31,6 +34,7 @@ impl Outcome {
     fn text(&self) -> String {
         match self {
             Self::NotYet => String::from("not read yet"),
+            Self::WarmingUp(error) => format!("warming up: {error}"),
             Self::Value(value) => format!("{value:.1}"),
             Self::Unavailable(reason) => format!("unavailable: {reason}"),
             Self::Failed(error) => format!("failed: {error}"),
@@ -39,23 +43,28 @@ impl Outcome {
 }
 
 /// Whether `next` is worth a log line after `previous`: a change of kind or of text is, a new value after a value is
-/// not, and the first value is not.
+/// not, the first value is not, and neither is a warm-up or the value after one.
 #[must_use]
 pub fn is_news(previous: &Outcome, next: &Outcome) -> bool {
     match (previous, next) {
-        (Outcome::Value(_) | Outcome::NotYet, Outcome::Value(_)) => false,
+        (Outcome::Value(_) | Outcome::NotYet | Outcome::WarmingUp(_), Outcome::Value(_))
+        | (_, Outcome::WarmingUp(_)) => false,
         _ => previous != next,
     }
 }
 
-/// Keeps `next` as what the reading said, and logs it when it is news.
+/// Keeps `next` as what the reading said, and logs it when it is news. A first read that fails is a warm-up.
 fn remember(said: &mut Outcome, next: Outcome, reading: &str) {
+    let next = match (&*said, next) {
+        (Outcome::NotYet, Outcome::Failed(error)) => Outcome::WarmingUp(error),
+        (_, next) => next,
+    };
     if is_news(said, &next) {
         match &next {
             Outcome::Failed(error) => tracing::warn!(reading, error, "reading failed"),
             Outcome::Unavailable(reason) => tracing::info!(reading, reason, "reading unavailable"),
             Outcome::Value(_) => tracing::info!(reading, "reading recovered"),
-            Outcome::NotYet => {}
+            Outcome::NotYet | Outcome::WarmingUp(_) => {}
         }
     }
     *said = next;
@@ -210,6 +219,16 @@ impl<C: Clock> Sampler<C> {
         if let Some(extras) = extras_after(outcome, sensors.memory_temp.as_ref()) {
             snapshot.memory_sticks = extras.stick_celsius.map(|celsius| Sticks { celsius, at: now });
         }
+        self.render_at(now)
+    }
+
+    /// Renders the latest readings in the current layout without reading any sensor, as a preview of new settings
+    /// needs: reading again at once would cost the locks and the hardware calls, and give load and FPS too short a span.
+    pub fn render(&self) -> OverlayFrame {
+        self.render_at(self.clock.now())
+    }
+
+    fn render_at(&self, now: Timestamp) -> OverlayFrame {
         OverlayFrame {
             lines: self.layout.render(&self.snapshot, now),
         }

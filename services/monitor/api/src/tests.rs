@@ -15,8 +15,8 @@ use platform_win32::etw::{start_session, stop_session};
 use monitor_application::StartupTask;
 
 use super::{
-    FrameTrace, SamplerControl, StopTrace, UnavailableStartup, build_sensors, count_frames_until_stopped, modules_dir,
-    refresh_startup_task, sample_until_stopped, startup_failure_text, wait_to_restart,
+    FrameTrace, SamplerControl, StopTrace, UnavailableStartup, build_sensors, count_frames_until_stopped,
+    is_new_failure, modules_dir, refresh_startup_task, sample_until_stopped, startup_failure_text, wait_to_restart,
 };
 
 fn fixed_sensors() -> Sensors {
@@ -117,19 +117,35 @@ fn the_sampler_keeps_sampling_once_an_interval_until_stopped() {
     });
 }
 
-#[test]
-fn an_apply_message_samples_again_at_once() {
-    let mut sampler = sampler();
-    let (frames, received) = mpsc::channel();
-    let (control, controlled) = mpsc::channel();
-    let wakes = Cell::new(0);
+/// A sampler whose CPU load reads 2.0, then 3.0, so a frame tells whether the hardware was read again.
+fn sampler_counting_cpu_reads() -> Sampler<FixedClock> {
+    let mut sensors = fixed_sensors();
+    sensors.cpu_load = Box::new(FakeSensor::new(vec![Ok(2.0), Ok(3.0)]));
+    Sampler::new(
+        sensors,
+        Box::new(FakeGpuSensors::default()),
+        FixedClock(Timestamp::UNIX_EPOCH),
+        &Settings::default(),
+    )
+}
+
+fn without_fps() -> Settings {
     let mut settings = Settings::default();
     for line in &mut settings.lines {
         if line.line == Line::Fps {
             line.enabled = false;
         }
     }
-    control.send(SamplerControl::Apply(settings)).unwrap();
+    settings
+}
+
+#[test]
+fn an_apply_message_redraws_at_once_without_reading_the_hardware() {
+    let mut sampler = sampler_counting_cpu_reads();
+    let (frames, received) = mpsc::channel();
+    let (control, controlled) = mpsc::channel();
+    let wakes = Cell::new(0);
+    control.send(SamplerControl::Apply(without_fps())).unwrap();
     drop(control);
 
     sample_until_stopped(&mut sampler, &frames, || wakes.set(wakes.get() + 1), &controlled);
@@ -138,7 +154,35 @@ fn an_apply_message_samples_again_at_once() {
     assert_eq!(all.len(), 2, "one frame at the start, one after the apply");
     assert!(all[0].lines.iter().any(|l| l.starts_with("FPS:")));
     assert!(all[1].lines.iter().all(|l| !l.starts_with("FPS:")));
+    assert_eq!(
+        all[1].lines[0], "CPU:   2.0 %, 50.0 °C",
+        "the reading the first frame had"
+    );
     assert_eq!(wakes.get(), 2);
+}
+
+#[test]
+fn previews_in_a_row_do_not_put_off_the_next_sample() {
+    let mut sampler = sampler_counting_cpu_reads();
+    let interval = sampler.interval();
+    let (frames, received) = mpsc::channel();
+    let (control, controlled) = mpsc::channel();
+
+    let sampled_again = std::thread::scope(|scope| {
+        scope.spawn(move || sample_until_stopped(&mut sampler, &frames, || {}, &controlled));
+        // A preview every fifth of an interval, as typing into a label sends them, for up to three intervals.
+        let sampled_again = (0..15).any(|_| {
+            control.send(SamplerControl::Apply(Settings::default())).unwrap();
+            pause(interval / 5);
+            received
+                .try_iter()
+                .any(|frame| frame.lines[1].starts_with("CPU:   3.0 %"))
+        });
+        drop(control);
+        sampled_again
+    });
+
+    assert!(sampled_again, "the hardware must be read again once an interval passed");
 }
 
 #[test]
@@ -327,6 +371,16 @@ fn waiting_to_restart_ends_when_the_app_is_stopping_or_the_sender_is_gone() {
         &FrameTrace::<FakeStopper>::new(),
         Duration::from_secs(60)
     ));
+}
+
+#[test]
+fn a_restart_failure_is_logged_once_until_it_changes() {
+    let mut last = None;
+    let (denied, busy) = (5, 170);
+
+    let logged = [denied, denied, busy, busy, denied].map(|failure| is_new_failure(&mut last, failure));
+
+    assert_eq!(logged, [true, false, true, false, true]);
 }
 
 #[test]

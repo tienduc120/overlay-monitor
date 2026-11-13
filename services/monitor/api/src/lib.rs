@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use monitor_application::{
     DriverStatus, GpuPair, GpuSensors, OverlayFrame, Sampler, SamplerControl, Sensor, Sensors, Settings, SettingsStore,
@@ -368,41 +368,65 @@ fn tray_icon_image() -> Result<Icon, Win32Error> {
         .or_else(|_| Icon::stock())
 }
 
-/// Sends a frame and wakes the UI to draw it once an interval, and again at once after each `Apply`, until the control
-/// sender is gone.
+/// What the sampler does after a wait.
+enum Round {
+    /// An interval passed since the last read: read every sensor.
+    Sample,
+    /// New settings came: draw the readings as they stand in them.
+    Redraw,
+    Stop,
+}
+
+/// Sends a frame and wakes the UI to draw it once an interval, and a redrawn one at once after each `Apply`, until the
+/// control sender is gone. A preview does not put off the next read, so a run of them keeps the readings fresh.
 fn sample_until_stopped<C: Clock>(
     sampler: &mut Sampler<C>,
     frames: &Sender<OverlayFrame>,
     wake: impl Fn(),
     control: &Receiver<SamplerControl>,
 ) {
+    let mut sampled_at = Instant::now();
+    let mut frame = sampler.sample();
     loop {
-        if frames.send(sampler.sample()).is_err() {
+        if frames.send(frame).is_err() {
             // Nobody is left to draw a frame.
             return;
         }
         wake();
-        if !wait_for_next_round(sampler, control) {
-            return;
-        }
+        frame = match wait_for_next_round(sampler, control, sampled_at) {
+            Round::Sample => {
+                sampled_at = Instant::now();
+                sampler.sample()
+            }
+            Round::Redraw => sampler.render(),
+            Round::Stop => return,
+        };
     }
 }
 
-/// Waits out the interval, or until settings arrive; `false` once the control sender is gone. A report is answered
-/// from the readings as they stand and does not end the wait: sampling again for it would query the hardware once more.
-fn wait_for_next_round<C: Clock>(sampler: &mut Sampler<C>, control: &Receiver<SamplerControl>) -> bool {
+/// Waits until an interval after `sampled_at` (the interval the settings name now), or until settings arrive. A
+/// report is answered from the readings as they stand and does not end the wait: sampling again for it would query the
+/// hardware once more.
+fn wait_for_next_round<C: Clock>(
+    sampler: &mut Sampler<C>,
+    control: &Receiver<SamplerControl>,
+    sampled_at: Instant,
+) -> Round {
     loop {
-        match control.recv_timeout(sampler.interval()) {
-            Err(RecvTimeoutError::Timeout) => return true,
+        let due = sampled_at
+            .checked_add(sampler.interval())
+            .map_or(Duration::ZERO, |due| due.saturating_duration_since(Instant::now()));
+        match control.recv_timeout(due) {
+            Err(RecvTimeoutError::Timeout) => return Round::Sample,
             Ok(SamplerControl::Apply(settings)) => {
                 sampler.apply(&settings);
-                return true;
+                return Round::Redraw;
             }
             Ok(SamplerControl::Report(reply)) => {
                 // The UI stopped waiting when its reply channel is gone, which is not worth a log line.
                 reply.send(sampler.report()).ok();
             }
-            Err(RecvTimeoutError::Disconnected) => return false,
+            Err(RecvTimeoutError::Disconnected) => return Round::Stop,
         }
     }
 }
@@ -521,13 +545,27 @@ fn start_again(
     trace: &FrameTrace<SessionStopper>,
     stop: &Receiver<()>,
 ) -> Option<(TraceSession, TraceConsumer)> {
+    let mut last_failure = None;
     while wait_to_restart(stop, trace, RESTART_DELAY) {
         match start_session(session_name, PRESENT_PROVIDERS) {
             Ok(started) => return Some(started),
-            Err(error) => tracing::warn!(?error, "the frame trace could not be started again"),
+            Err(error) => {
+                if is_new_failure(&mut last_failure, error.code().0) {
+                    tracing::warn!(
+                        ?error,
+                        "the frame trace could not be started again; it is tried every 5 s"
+                    );
+                }
+            }
         }
     }
     None
+}
+
+/// Whether a failed restart is worth a log line: the first is, then only one with another error code, so a trace that
+/// cannot restart does not fill the log every 5 s.
+fn is_new_failure(last: &mut Option<i32>, failure: i32) -> bool {
+    last.replace(failure) != Some(failure)
 }
 
 /// Waits up to `delay` before a restart; `false` when the app is stopping, which a message or a gone sender says.

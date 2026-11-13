@@ -152,6 +152,25 @@ fn applying_new_lines_and_labels_changes_the_next_frame() {
 }
 
 #[test]
+fn rendering_draws_the_readings_as_they_stand_without_reading_again() {
+    let mut sensors = sensors(FakeSensor::fixed(45.8));
+    sensors.cpu_load = Box::new(FakeSensor::new(vec![Ok(2.0), Ok(3.0)]));
+    let mut s = sampler(sensors, StepClock::at(0));
+    s.sample();
+    let mut settings = Settings::default();
+    for line in &mut settings.lines {
+        if line.line == Line::Cpu {
+            line.label = String::from("PROC");
+        }
+    }
+    s.apply(&settings);
+
+    let lines = s.render().lines;
+
+    assert_eq!(lines[1], "PROC:  2.0 %, 45.8 °C", "the new label, the old reading");
+}
+
+#[test]
 fn applying_a_new_interval_changes_the_wait() {
     let mut s = sampler(sensors(FakeSensor::fixed(1.0)), StepClock::at(0));
     s.apply(&Settings {
@@ -256,12 +275,15 @@ struct Underlying;
 
 #[test]
 fn the_report_has_every_reading_with_its_value_or_error() {
-    let mut sensors = sensors(FakeSensor::new(vec![Err(ReadError::Failed(Box::new(Busy(
-        Underlying,
-    ))))]));
+    let mut sensors = sensors(FakeSensor::new(vec![
+        Err(ReadError::Failed("warming up".into())),
+        Err(ReadError::Failed(Box::new(Busy(Underlying)))),
+    ]));
     sensors.cpu_load = Box::new(FakeSensor::new(vec![Err(ReadError::Unavailable("no counter".into()))]));
     sensors.fps = Box::new(FakeSensor::fixed(f64::NAN));
     let mut s = sampler(sensors, StepClock::at(0));
+    // The first failed read of each is only a warm-up; the second is the failure.
+    s.sample();
     s.sample();
 
     let report = outcomes(&s);
@@ -390,6 +412,46 @@ fn a_new_failure_text_is_news() {
         &failed("timeout"),
         &Outcome::Unavailable(String::from("timeout"))
     ));
+}
+
+#[test]
+fn a_first_read_that_fails_is_a_warm_up_and_only_a_second_failure_is_news() {
+    let warming = Outcome::WarmingUp(String::from("no baseline yet"));
+
+    assert!(!is_news(&Outcome::NotYet, &warming));
+    assert!(
+        !is_news(&warming, &Outcome::Value(2.0)),
+        "no logged failure to recover from"
+    );
+    assert!(is_news(&warming, &failed("no baseline yet")));
+}
+
+#[test]
+fn the_first_failed_read_after_start_and_after_a_gpu_swap_is_a_warm_up() {
+    let no_baseline = || Err(ReadError::Failed("no baseline yet".into()));
+    let mut sensors = sensors(FakeSensor::fixed(1.0));
+    sensors.cpu_load = Box::new(FakeSensor::new(vec![no_baseline(), no_baseline()]));
+    let mut s = sampler(sensors, StepClock::at(0));
+    let said = |s: &Sampler<StepClock>, reading| {
+        outcomes(s)
+            .into_iter()
+            .find_map(|(name, text)| (name == reading).then_some(text))
+    };
+
+    s.sample();
+    assert_eq!(said(&s, "CPU load").as_deref(), Some("warming up: no baseline yet"));
+    s.sample();
+    assert_eq!(said(&s, "CPU load").as_deref(), Some("failed: no baseline yet"));
+
+    s.apply(&Settings {
+        gpu: Some(String::from("B")),
+        ..Settings::default()
+    });
+    assert_eq!(
+        said(&s, "GPU load").as_deref(),
+        Some("not read yet"),
+        "the new adapter's first read is a warm-up too"
+    );
 }
 
 #[test]

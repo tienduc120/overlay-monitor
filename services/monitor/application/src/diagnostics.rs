@@ -4,7 +4,7 @@ use std::fmt::Write;
 
 use crate::{PawnIoStatus, ReadingReport};
 
-const BYTES_PER_GIB: f64 = 1_073_741_824.0;
+const MIB_PER_GIB: f64 = 1024.0;
 
 /// What one graphics adapter is and whether its temperature can be read.
 #[derive(Clone, Debug, PartialEq)]
@@ -71,10 +71,10 @@ fn reading_line(reading: &ReadingReport) -> String {
     line
 }
 
+/// Bytes as GiB, counted in whole MiB: a `u32` converts to `f64` exactly, and the report shows a tenth of a GiB.
 fn gib(bytes: u64) -> f64 {
-    #[expect(clippy::cast_precision_loss, reason = "a memory size stays far below 2^53 bytes")]
-    let bytes = bytes as f64;
-    bytes / BYTES_PER_GIB
+    let mib = u32::try_from(bytes >> 20).unwrap_or(u32::MAX);
+    f64::from(mib) / MIB_PER_GIB
 }
 
 #[cfg(test)]
