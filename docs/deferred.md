@@ -17,4 +17,3 @@ Left out on purpose until a real project needs it. Each entry says what triggers
 | Run without the tray icon | Before start-with-Windows ships | A failed tray-icon add at startup no longer exits the app: it runs without the icon and adds it on `TaskbarCreated` |
 | Restart a stopped ETW session | Plan 2's diagnostics | An ETW session stopped from outside is started again, so FPS does not stay "—" |
 | Orderly exit at sign-out | Plan 2 | `WM_QUERYENDSESSION` and `WM_ENDSESSION` are handled, so the app exits in order when the user signs out |
-| Ignore the tests that need a GPU or a notification area | The first CI run on `windows-latest` | If the `platform/win32` gpu, pdh, tray, and menu tests or the interfaces `ui` hidden-frames test fail there, each gets `#[ignore = "needs ..."]` with its reason |
