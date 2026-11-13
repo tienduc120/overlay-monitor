@@ -1,0 +1,16 @@
+[package]
+name = "monitor-infrastructure"
+description = "Sensor adapters: Windows counters and hardware readings behind the application's sensor port."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+monitor-application = { path = "../application" }
+platform-win32 = { workspace = true }
+thiserror = { workspace = true, features = ["std"] }
+
+[lints]
+workspace = true

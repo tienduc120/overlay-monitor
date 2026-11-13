@@ -18,6 +18,7 @@ publish = false
 platform-clock = { path = "platform/clock" }
 platform-http = { path = "platform/http" }
 platform-task = { path = "platform/task" }
+platform-win32 = { path = "platform/win32" }
 
 # Runtime
 windows = "0.62.2"
