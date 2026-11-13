@@ -33,7 +33,7 @@ fn the_default_layout_renders_the_screenshot_lines() {
     assert_eq!(
         lines,
         [
-            "FPS:   30 FPS",
+            "FPS:    30 FPS",
             "CPU:   2.0 %, 45.8 °C",
             "GPU:   4.0 %, 56.0 °C",
             "DDR5: 30.9 %, 35.5 °C"
@@ -49,7 +49,7 @@ fn a_missing_reading_shows_a_dash_in_its_column() {
         ..screenshot()
     };
     let lines = Layout::default().render(&snap, at(0));
-    assert_eq!(lines[0], "FPS:    — FPS");
+    assert_eq!(lines[0], "FPS:     — FPS");
     assert_eq!(lines[1], "CPU:   2.0 %,    — °C");
 }
 
@@ -77,7 +77,7 @@ fn a_disabled_line_is_left_out_and_the_labels_realign() {
     layout.lines[3].enabled = false;
     assert_eq!(
         layout.render(&screenshot(), at(0)),
-        ["FPS:  30 FPS", "CPU:  2.0 %, 45.8 °C", "GPU:  4.0 %, 56.0 °C"]
+        ["FPS:   30 FPS", "CPU:  2.0 %, 45.8 °C", "GPU:  4.0 %, 56.0 °C"]
     );
 }
 
@@ -89,6 +89,6 @@ fn values_round_to_one_decimal_and_fps_to_a_whole_number() {
         ..screenshot()
     };
     let lines = Layout::default().render(&snap, at(0));
-    assert_eq!(lines[0], "FPS:  144 FPS");
+    assert_eq!(lines[0], "FPS:   144 FPS");
     assert_eq!(lines[1], "CPU: 100.0 %, 45.8 °C");
 }

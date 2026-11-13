@@ -68,7 +68,7 @@ impl Layout {
             .map(|l| {
                 let label = format!("{:<width$}", format!("{}:", l.label));
                 let body = match l.kind {
-                    LineKind::Fps => format!("{} FPS", number(fresh(snapshot.fps), 4, 0)),
+                    LineKind::Fps => format!("{} FPS", number(fresh(snapshot.fps), 5, 0)),
                     LineKind::Cpu => load_and_temp(fresh(snapshot.cpu_load), fresh(snapshot.cpu_temp)),
                     LineKind::Gpu => load_and_temp(fresh(snapshot.gpu_load), fresh(snapshot.gpu_temp)),
                     LineKind::Memory => load_and_temp(fresh(snapshot.memory_load), fresh(snapshot.memory_temp)),
