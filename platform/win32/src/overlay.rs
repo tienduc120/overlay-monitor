@@ -2,8 +2,8 @@
 //! takes focus.
 //!
 //! It is a layered window: Direct2D draws into a 32-bit DIB with premultiplied alpha, and `UpdateLayeredWindow` hands
-//! the bits to the compositor. Everything about that presentation stays in this file. It is provisional until ADR-0016
-//! records the `FreeSync` measurement (see `docs/deferred.md`).
+//! the bits to the compositor. Everything about that presentation stays in this file. ADR-0016 records why it is
+//! layered and what would reopen the choice.
 
 use std::cell::RefCell;
 use std::ptr;

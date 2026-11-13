@@ -19,7 +19,7 @@ One file per decision, numbered, never edited after acceptance (supersede it wit
 | [0013](0013-the-windows-crate.md) | The windows crate | accepted |
 | [0014](0014-sync-ports-and-scoped-threads.md) | Sync ports and scoped threads | accepted |
 | [0015](0015-ci-runs-on-windows.md) | CI runs on Windows | accepted |
-| 0016 | Overlay presentation | reserved: pending the owner's PresentMon run with FreeSync on; the layered window is in use until then |
+| [0016](0016-overlay-presentation.md) | Overlay presentation | accepted |
 | [0017](0017-remove-the-backend-template-parts.md) | Remove the backend template parts | accepted |
 
 Needs an ADR first: a new external dependency, a hosted service, the toolchain pin or a pinned tool moving, a change to a published contract, or a gate added, loosened, or removed.
