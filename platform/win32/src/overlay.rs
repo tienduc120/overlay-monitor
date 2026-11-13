@@ -21,28 +21,32 @@ use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_B8G8R8A8_UNORM;
 use windows::Win32::Graphics::Gdi::{
     AC_SRC_ALPHA, AC_SRC_OVER, BI_RGB, BITMAPINFO, BITMAPINFOHEADER, BLENDFUNCTION, CreateCompatibleDC,
     CreateDIBSection, DIB_RGB_COLORS, DeleteDC, DeleteObject, GdiFlush, GetMonitorInfoW, HBITMAP, HDC, HGDIOBJ,
-    MONITOR_DEFAULTTOPRIMARY, MONITORINFO, MonitorFromPoint, SelectObject,
+    HMONITOR, MONITOR_DEFAULTTONEAREST, MONITOR_DEFAULTTOPRIMARY, MONITORINFO, MonitorFromPoint, MonitorFromWindow,
+    SelectObject,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::HiDpi::GetDpiForWindow;
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, DestroyWindow, GWLP_USERDATA, GetWindowLongPtrW, HTCAPTION, HWND_TOPMOST,
-    IsWindowVisible, MA_NOACTIVATE, PostQuitMessage, RegisterClassExW, SW_HIDE, SW_SHOWNOACTIVATE, SWP_NOACTIVATE,
-    SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SetWindowLongPtrW, SetWindowPos, ShowWindow, ULW_ALPHA,
-    USER_DEFAULT_SCREEN_DPI, UpdateLayeredWindow, WM_CLOSE, WM_DPICHANGED, WM_MOUSEACTIVATE, WM_NCHITTEST,
-    WM_NCRBUTTONDOWN, WM_NCRBUTTONUP, WNDCLASSEXW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
-    WS_POPUP,
+    CreateWindowExW, DefWindowProcW, DestroyWindow, GWLP_USERDATA, GetCursorPos, GetWindowLongPtrW, GetWindowRect,
+    HTCAPTION, HWND_TOPMOST, IsWindowVisible, MA_NOACTIVATE, PostQuitMessage, RegisterClassExW, SW_HIDE,
+    SW_SHOWNOACTIVATE, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SetWindowLongPtrW, SetWindowPos,
+    ShowWindow, ULW_ALPHA, USER_DEFAULT_SCREEN_DPI, UpdateLayeredWindow, WM_CLOSE, WM_DPICHANGED, WM_MOUSEACTIVATE,
+    WM_MOVING, WM_NCHITTEST, WM_NCRBUTTONDOWN, WM_NCRBUTTONUP, WNDCLASSEXW, WS_EX_LAYERED, WS_EX_NOACTIVATE,
+    WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
 };
 use windows::core::{PCWSTR, w};
 
 use crate::Win32Error;
 use crate::dpi::{dips_from_points, pixels_from_dips};
+use crate::snap::{Edges, Rect, keep_snapped, snap_while_moving};
 use crate::text::{TextPainter, TextStyle};
 use crate::ui::{EventSink, UiEvent};
 
 const CLASS: PCWSTR = w!("OverlayMonitorOverlay");
 /// Clear space around the outlined text, in pixels.
 const MARGIN_PX: f32 = 4.0;
+/// How near an edge a dragged overlay snaps to it, in pixels at 96 DPI.
+const SNAP_DISTANCE_96_DPI: u64 = 12;
 
 /// The overlay window. It belongs to the thread that created it, which must pump its messages.
 pub struct OverlayWindow {
@@ -66,6 +70,8 @@ struct Canvas {
     surface: Option<Surface>,
     /// What was drawn last, to draw again at a new DPI.
     last: Option<(Vec<String>, TextStyle)>,
+    /// The monitor edges the window is flush with, which a resize keeps it flush with.
+    edges: Edges,
 }
 
 impl OverlayWindow {
@@ -102,6 +108,7 @@ impl OverlayWindow {
             target,
             surface: None,
             last: None,
+            edges: Edges::default(),
         };
         let shared = Rc::new(Shared {
             sink,
@@ -204,7 +211,7 @@ impl Canvas {
         // SAFETY: ends the draw begun above; no tags are wanted.
         let ended = unsafe { self.target.EndDraw(None, None) };
         painted.and(ended)?;
-        present(self.window, surface)
+        present(self.window, surface, self.edges)
     }
 
     /// Draws the last lines again at `dpi`, after the window moved to a monitor with another scale.
@@ -216,9 +223,9 @@ impl Canvas {
     }
 }
 
-/// Makes `surface` the bitmap's content and size. The window keeps its position, and goes back on top of windows
-/// that became topmost since, without being activated.
-fn present(window: HWND, surface: &Surface) -> Result<(), Win32Error> {
+/// Makes `surface` the bitmap's content and size. The window stays flush with the monitor edges it was snapped to,
+/// inside its monitor, and goes back on top of windows that became topmost since, without being activated.
+fn present(window: HWND, surface: &Surface, edges: Edges) -> Result<(), Win32Error> {
     let source = POINT::default();
     let blend = per_pixel_alpha();
     // SAFETY: the window and the surface's DC are alive, and every pointer is to a live value.
@@ -236,8 +243,23 @@ fn present(window: HWND, surface: &Surface) -> Result<(), Win32Error> {
         )
     }?;
     let SIZE { cx, cy } = surface.size;
-    // SAFETY: the window is alive; it keeps its position and is not activated.
-    unsafe { SetWindowPos(window, Some(HWND_TOPMOST), 0, 0, cx, cy, SWP_NOACTIVATE | SWP_NOMOVE) }
+    let mut current = RECT::default();
+    // SAFETY: the window is alive and `current` is a live local.
+    let placed = unsafe { GetWindowRect(window, &raw mut current) }
+        .ok()
+        .and_then(|()| {
+            // SAFETY: a handle of a live window; the nearest monitor is always found.
+            let monitor = unsafe { MonitorFromWindow(window, MONITOR_DEFAULTTONEAREST) };
+            monitor_bounds(monitor)
+        })
+        .map(|bounds| keep_snapped((cx, cy), from_win32(current), bounds, edges));
+    // SAFETY: the window is alive; it is not activated. Without a monitor to place it on it keeps its position.
+    unsafe {
+        match placed {
+            Some(at) => SetWindowPos(window, Some(HWND_TOPMOST), at.left, at.top, cx, cy, SWP_NOACTIVATE),
+            None => SetWindowPos(window, Some(HWND_TOPMOST), 0, 0, cx, cy, SWP_NOACTIVATE | SWP_NOMOVE),
+        }
+    }
 }
 
 /// Blends with each pixel's own alpha, which is premultiplied, at full strength.
@@ -454,7 +476,7 @@ fn code(value: u32) -> LRESULT {
 }
 
 /// Answers the overlay's messages: the whole window is a caption, so dragging anywhere moves it; a click never
-/// activates it; a right-click asks for its menu; a new DPI resizes and redraws it.
+/// activates it; a drag snaps it to monitor edges; a right-click asks for its menu; a new DPI resizes and redraws it.
 ///
 /// # Safety
 /// Only Windows calls this, with the arguments of a message for a window of this class.
@@ -470,6 +492,21 @@ unsafe extern "system" fn window_procedure(window: HWND, message: u32, wparam: W
             // SAFETY: posts WM_QUIT to this thread, which owns the window.
             unsafe { PostQuitMessage(0) };
             LRESULT(0)
+        }
+        WM_MOVING => {
+            let mut cursor = POINT::default();
+            // SAFETY: `cursor` is a live local. A failure leaves the proposed move as it is.
+            if unsafe { GetCursorPos(&raw mut cursor) }.is_err() {
+                return LRESULT(0);
+            }
+            // SAFETY: for WM_MOVING, `lparam` points to the proposed rectangle, which the procedure may rewrite and
+            // which nothing else reads during the message.
+            let proposed = unsafe { ptr::with_exposed_provenance_mut::<RECT>(lparam.0.cast_unsigned()).as_mut() };
+            // SAFETY: called from this class's window procedure.
+            let handled =
+                proposed.is_some_and(|proposed| on_moving(window, unsafe { shared(window) }, proposed, cursor));
+            // TRUE tells Windows the rectangle was changed.
+            LRESULT(isize::from(handled))
         }
         WM_NCRBUTTONUP => {
             // SAFETY: called from this class's window procedure.
@@ -516,6 +553,61 @@ fn on_dpi_changed(window: HWND, shared: Option<&Shared>, suggested: &RECT, dpi: 
         && let Ok(mut canvas) = shared.canvas.try_borrow_mut()
     {
         canvas.redraw(dpi).ok();
+    }
+}
+
+/// The snap distance in pixels at `dpi`: 12 at 96 DPI.
+fn snap_distance(dpi: u32) -> i32 {
+    let scaled = u64::from(dpi) * SNAP_DISTANCE_96_DPI / u64::from(USER_DEFAULT_SCREEN_DPI);
+    i32::try_from(scaled).unwrap_or(i32::MAX)
+}
+
+/// Snaps the rectangle being dragged to the edges of the monitor under `cursor`, and remembers which edges it is
+/// flush with. Returns whether it rewrote `proposed`.
+fn on_moving(window: HWND, shared: Option<&Shared>, proposed: &mut RECT, cursor: POINT) -> bool {
+    let Some(shared) = shared else { return false };
+    // A canvas in use means this message came from inside a draw; leave that move alone.
+    let Ok(mut canvas) = shared.canvas.try_borrow_mut() else {
+        return false;
+    };
+    // SAFETY: a plain value; the nearest monitor is always found.
+    let monitor = unsafe { MonitorFromPoint(cursor, MONITOR_DEFAULTTONEAREST) };
+    let Some(bounds) = monitor_bounds(monitor) else {
+        return false;
+    };
+    let (snapped, edges) = snap_while_moving(from_win32(*proposed), bounds, snap_distance(window_dpi(window)));
+    *proposed = to_win32(snapped);
+    canvas.edges = edges;
+    true
+}
+
+/// The full bounds of `monitor`, taskbar included: in a game the taskbar is hidden.
+fn monitor_bounds(monitor: HMONITOR) -> Option<Rect> {
+    let mut info = MONITORINFO {
+        cbSize: u32::try_from(size_of::<MONITORINFO>()).unwrap_or(u32::MAX),
+        ..MONITORINFO::default()
+    };
+    // SAFETY: `info` is a live local with its size set.
+    unsafe { GetMonitorInfoW(monitor, &raw mut info) }
+        .as_bool()
+        .then(|| from_win32(info.rcMonitor))
+}
+
+fn from_win32(rect: RECT) -> Rect {
+    Rect {
+        left: rect.left,
+        top: rect.top,
+        right: rect.right,
+        bottom: rect.bottom,
+    }
+}
+
+fn to_win32(rect: Rect) -> RECT {
+    RECT {
+        left: rect.left,
+        top: rect.top,
+        right: rect.right,
+        bottom: rect.bottom,
     }
 }
 

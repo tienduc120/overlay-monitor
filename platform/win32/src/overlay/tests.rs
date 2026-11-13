@@ -2,15 +2,15 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use std::time::Duration;
 
-use windows::Win32::Foundation::{DWRITE_E_NOFONT, LPARAM, LRESULT, RECT, WPARAM};
+use windows::Win32::Foundation::{DWRITE_E_NOFONT, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows::Win32::UI::WindowsAndMessaging::{
     GWL_EXSTYLE, GetWindowLongPtrW, GetWindowRect, HTCAPTION, HWND_NOTOPMOST, IsWindow, MA_NOACTIVATE, MSG, PM_REMOVE,
-    PeekMessageW, PostMessageW, SPI_GETWORKAREA, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
+    PeekMessageW, PostMessageW, SPI_GETWORKAREA, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER,
     SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS, SendMessageW, SetWindowPos, SystemParametersInfoW, WM_CLOSE, WM_MOUSEACTIVATE,
     WM_NCHITTEST, WM_NCRBUTTONUP, WM_QUIT, WS_EX_TOPMOST,
 };
 
-use super::{OverlayWindow, premultiplied_bgra, screen_point, window_size};
+use super::{OverlayWindow, on_moving, premultiplied_bgra, screen_point, shared, snap_distance, window_size};
 use crate::text::TextStyle;
 use crate::ui::{EventSink, UiEvent, pump_messages_for};
 
@@ -261,4 +261,72 @@ fn closing_the_overlay_asks_the_loop_to_end_instead_of_destroying_it() {
     // SAFETY: `message` is a live local; only WM_QUIT is asked for, and it is removed so nothing else sees it.
     let quit = unsafe { PeekMessageW(&raw mut message, None, WM_QUIT, WM_QUIT, PM_REMOVE) };
     assert!(quit.as_bool(), "a close request must post WM_QUIT");
+}
+
+#[test]
+fn the_snap_distance_grows_with_the_dpi() {
+    assert_eq!(snap_distance(96), 12);
+    assert_eq!(snap_distance(120), 15, "125 % scaling");
+    assert_eq!(snap_distance(192), 24);
+}
+
+#[test]
+fn a_drag_across_the_left_edge_of_the_primary_monitor_is_written_back_flush() {
+    let window = OverlayWindow::create(EventSink::discard()).unwrap();
+    let mut proposed = RECT {
+        left: -30,
+        top: 400,
+        right: 170,
+        bottom: 500,
+    };
+
+    // SAFETY: called as the window procedure would, on the window's own thread.
+    let handled = on_moving(
+        window.window,
+        unsafe { shared(window.window) },
+        &mut proposed,
+        POINT { x: 0, y: 0 },
+    );
+
+    assert!(handled, "the rectangle must be rewritten");
+    assert_eq!(
+        (proposed.left, proposed.right, proposed.top, proposed.bottom),
+        (0, 200, 400, 500),
+        "flush with the monitor's left edge, same size"
+    );
+}
+
+#[test]
+fn a_snapped_window_that_grows_stays_flush_with_the_edge() {
+    let mut window = OverlayWindow::create(EventSink::discard()).unwrap();
+    window.draw(&lines(&["FPS:   30 FPS"]), &style()).unwrap();
+    let mut proposed = window_rect(&window);
+    proposed.left -= 30;
+    proposed.right -= 30;
+    // SAFETY: as above.
+    on_moving(
+        window.window,
+        unsafe { shared(window.window) },
+        &mut proposed,
+        POINT { x: 0, y: 0 },
+    );
+    // SAFETY: the window is alive, and `proposed` is the flush rectangle.
+    unsafe {
+        SetWindowPos(
+            window.window,
+            None,
+            proposed.left,
+            proposed.top,
+            proposed.right - proposed.left,
+            proposed.bottom - proposed.top,
+            SWP_NOACTIVATE | SWP_NOZORDER,
+        )
+    }
+    .unwrap();
+
+    window
+        .draw(&lines(&["FPS:   30 FPS", "CPU:   2.0 %, 45.8 °C"]), &style())
+        .unwrap();
+
+    assert_eq!(window_rect(&window).left, 0, "growing must not pull it off the edge");
 }
