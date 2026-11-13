@@ -2,12 +2,12 @@ use std::cell::Cell;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 
-use monitor_application::testing::FakeSensor;
-use monitor_application::{ReadError, Sampler, Sensor, Sensors};
-use monitor_infrastructure::FrameCounter;
+use monitor_application::testing::{FakeGpuSensors, FakeSensor};
+use monitor_application::{GpuPair, Line, ReadError, Sampler, Sensor, Sensors, Settings};
+use monitor_infrastructure::{FrameCounter, UnavailableSensor};
 use platform_clock::{FixedClock, Timestamp};
 
-use super::{build_sensors, modules_dir, sample_until_stopped};
+use super::{SamplerControl, build_sensors, modules_dir, sample_until_stopped};
 
 fn fixed_sensors() -> Sensors {
     let fixed = || -> Box<dyn Sensor> { Box::new(FakeSensor::fixed(50.0)) };
@@ -23,7 +23,20 @@ fn fixed_sensors() -> Sensors {
 }
 
 fn sampler() -> Sampler<FixedClock> {
-    Sampler::new(fixed_sensors(), FixedClock(Timestamp::UNIX_EPOCH))
+    Sampler::new(
+        fixed_sensors(),
+        Box::new(FakeGpuSensors::default()),
+        FixedClock(Timestamp::UNIX_EPOCH),
+        &Settings::default(),
+    )
+}
+
+fn unavailable_gpu() -> GpuPair {
+    let unavailable = || -> Box<dyn Sensor> { Box::new(UnavailableSensor(String::from("no GPU adapter was found"))) };
+    GpuPair {
+        load: unavailable(),
+        temp: unavailable(),
+    }
 }
 
 #[test]
@@ -36,7 +49,7 @@ fn modules_sit_next_to_the_exe() {
 
 #[test]
 fn without_modules_the_temperatures_are_unavailable_not_errors() {
-    let mut s = build_sensors(Path::new(r"C:\does-not-exist"), None, FrameCounter::new());
+    let mut s = build_sensors(Path::new(r"C:\does-not-exist"), unavailable_gpu(), FrameCounter::new());
     assert!(matches!(s.cpu_temp.read(), Err(ReadError::Unavailable(_))));
     assert!(matches!(s.memory_temp.read(), Err(ReadError::Unavailable(_))));
     assert!(
@@ -49,11 +62,11 @@ fn without_modules_the_temperatures_are_unavailable_not_errors() {
 fn the_sampler_sends_a_frame_and_wakes_the_ui_before_it_waits_for_a_stop() {
     let mut sampler = sampler();
     let (frames, received) = mpsc::channel();
-    let (stop, stopped) = mpsc::channel();
+    let (control, controlled) = mpsc::channel::<SamplerControl>();
     let wakes = Cell::new(0);
-    stop.send(()).unwrap();
+    drop(control);
 
-    sample_until_stopped(&mut sampler, &frames, || wakes.set(wakes.get() + 1), &stopped);
+    sample_until_stopped(&mut sampler, &frames, || wakes.set(wakes.get() + 1), &controlled);
 
     assert_eq!(
         received.try_iter().count(),
@@ -67,10 +80,10 @@ fn the_sampler_sends_a_frame_and_wakes_the_ui_before_it_waits_for_a_stop() {
 fn the_sampler_stops_once_its_stop_sender_is_gone() {
     let mut sampler = sampler();
     let (frames, received) = mpsc::channel();
-    let (stop, stopped) = mpsc::channel::<()>();
-    drop(stop);
+    let (control, controlled) = mpsc::channel::<SamplerControl>();
+    drop(control);
 
-    sample_until_stopped(&mut sampler, &frames, || {}, &stopped);
+    sample_until_stopped(&mut sampler, &frames, || {}, &controlled);
 
     assert_eq!(received.try_iter().count(), 1);
 }
@@ -80,16 +93,40 @@ fn the_sampler_keeps_sampling_once_an_interval_until_stopped() {
     let mut sampler = sampler();
     let interval = sampler.interval();
     let (frames, received) = mpsc::channel();
-    let (stop, stopped) = mpsc::channel();
+    let (control, controlled) = mpsc::channel::<SamplerControl>();
 
     // The scope joins the sampler thread, so a sampler that never stops hangs this test until nextest fails it.
     std::thread::scope(|scope| {
-        scope.spawn(move || sample_until_stopped(&mut sampler, &frames, || {}, &stopped));
+        scope.spawn(move || sample_until_stopped(&mut sampler, &frames, || {}, &controlled));
         for n in 1..=2 {
             received
                 .recv_timeout(interval * 3)
                 .unwrap_or_else(|e| panic!("frame {n} must arrive within three intervals: {e}"));
         }
-        stop.send(()).unwrap();
+        drop(control);
     });
+}
+
+#[test]
+fn an_apply_message_samples_again_at_once() {
+    let mut sampler = sampler();
+    let (frames, received) = mpsc::channel();
+    let (control, controlled) = mpsc::channel();
+    let wakes = Cell::new(0);
+    let mut settings = Settings::default();
+    for line in &mut settings.lines {
+        if line.line == Line::Fps {
+            line.enabled = false;
+        }
+    }
+    control.send(SamplerControl::Apply(settings)).unwrap();
+    drop(control);
+
+    sample_until_stopped(&mut sampler, &frames, || wakes.set(wakes.get() + 1), &controlled);
+
+    let all: Vec<_> = received.try_iter().collect();
+    assert_eq!(all.len(), 2, "one frame at the start, one after the apply");
+    assert!(all[0].lines.iter().any(|l| l.starts_with("FPS:")));
+    assert!(all[1].lines.iter().all(|l| !l.starts_with("FPS:")));
+    assert_eq!(wakes.get(), 2);
 }

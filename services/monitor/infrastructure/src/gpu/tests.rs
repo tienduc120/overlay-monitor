@@ -1,7 +1,7 @@
 use monitor_application::Sensor;
 use platform_win32::gpu::{GpuAdapter, gpu_adapters};
 
-use super::{GpuTemperature, engine_load_percent, pick_adapter};
+use super::{GpuTemperature, adapter_for, engine_load_percent, pick_adapter};
 
 fn adapter(name: &str, luid: u64, gib: u64) -> GpuAdapter {
     GpuAdapter {
@@ -18,6 +18,15 @@ fn the_adapter_with_the_most_dedicated_memory_is_followed() {
         adapter("AMD Radeon RX 9060 XT", 0xD3E5, 16),
     ];
     assert_eq!(pick_adapter(&list).unwrap().name, "AMD Radeon RX 9060 XT");
+}
+
+#[test]
+fn a_named_adapter_is_followed_and_an_unknown_name_falls_back_to_the_most_memory() {
+    let list = [adapter("Small", 1, 0), adapter("Big", 2, 16)];
+    assert_eq!(adapter_for(&list, Some("Small")).unwrap().luid, 1);
+    assert_eq!(adapter_for(&list, Some("Gone")).unwrap().luid, 2);
+    assert_eq!(adapter_for(&list, None).unwrap().luid, 2);
+    assert!(adapter_for(&[], Some("Small")).is_none());
 }
 
 #[test]

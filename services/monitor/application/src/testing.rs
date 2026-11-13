@@ -3,14 +3,18 @@
 use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::rc::Rc;
+use std::sync::{Arc, Mutex, PoisonError};
 
-use crate::{LoadSettingsError, ReadError, SaveSettingsError, Sensor, Settings, SettingsStore};
+use crate::{
+    Extras, GpuPair, GpuSensors, LoadSettingsError, ReadError, SaveSettingsError, Sensor, Settings, SettingsStore,
+};
 
 /// Answers in order, then keeps repeating the last answer.
 #[derive(Debug)]
 pub struct FakeSensor {
     queued: VecDeque<Result<f64, ReadError>>,
     last: Option<Result<f64, ReadError>>,
+    extras: Extras,
 }
 
 impl FakeSensor {
@@ -18,11 +22,19 @@ impl FakeSensor {
         Self {
             queued: results.into(),
             last: None,
+            extras: Extras::default(),
         }
     }
 
     pub fn fixed(value: f64) -> Self {
         Self::new(vec![Ok(value)])
+    }
+
+    /// Answers these extras after every `Ok`.
+    #[must_use]
+    pub fn with_extras(mut self, extras: Extras) -> Self {
+        self.extras = extras;
+        self
     }
 }
 
@@ -45,6 +57,10 @@ impl Sensor for FakeSensor {
             || Err(ReadError::Unavailable(String::from("no answer programmed"))),
             repeat,
         )
+    }
+
+    fn extras(&self) -> Extras {
+        self.extras.clone()
     }
 }
 
@@ -117,5 +133,29 @@ impl SettingsStore for MemoryStore {
         record.saved.push(settings.clone());
         record.held = Some(settings.clone());
         Ok(())
+    }
+}
+
+/// Opens a fixed pair for any adapter and remembers which names were asked for. A clone shares the record.
+#[derive(Clone, Debug, Default)]
+pub struct FakeGpuSensors(Arc<Mutex<Vec<Option<String>>>>);
+
+impl FakeGpuSensors {
+    /// Every name `open` was called with, in order.
+    pub fn opened(&self) -> Vec<Option<String>> {
+        self.0.lock().unwrap_or_else(PoisonError::into_inner).clone()
+    }
+}
+
+impl GpuSensors for FakeGpuSensors {
+    fn open(&mut self, name: Option<&str>) -> GpuPair {
+        self.0
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push(name.map(str::to_owned));
+        GpuPair {
+            load: Box::new(FakeSensor::fixed(11.0)),
+            temp: Box::new(FakeSensor::fixed(66.0)),
+        }
     }
 }

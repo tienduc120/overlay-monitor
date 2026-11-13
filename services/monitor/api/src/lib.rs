@@ -6,17 +6,17 @@ use std::process::ExitCode;
 use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 
-use monitor_application::{OverlayFrame, Sampler, Sensor, Sensors, default_style};
+use monitor_application::{GpuPair, GpuSensors, OverlayFrame, Sampler, Sensor, Sensors, Settings, default_style};
 use monitor_infrastructure::{
-    CpuLoad, Ddr5Temperature, FrameCounter, FrameRate, GpuLoad, GpuTemperature, MemoryLoad, PRESENT_PROVIDERS,
-    RyzenTemperature, UnavailableSensor, is_present, or_unavailable, pick_adapter,
+    AdapterSensors, CpuLoad, Ddr5Temperature, FrameCounter, FrameRate, MemoryLoad, PRESENT_PROVIDERS, RyzenTemperature,
+    UnavailableSensor, is_present, or_unavailable,
 };
 use monitor_interfaces::{OverlayView, Ui};
 use platform_clock::{Clock, SystemClock};
 use platform_win32::Win32Error;
 use platform_win32::dpi::{enable_per_monitor_awareness, small_icon_size};
 use platform_win32::etw::{TraceConsumer, TraceSession, start_session};
-use platform_win32::gpu::gpu_adapters;
+use platform_win32::gpu::{GpuAdapter, gpu_adapters};
 use platform_win32::icon::Icon;
 use platform_win32::instance::SingleInstance;
 use platform_win32::overlay::OverlayWindow;
@@ -32,7 +32,6 @@ const TOOLTIP: &str = "Overlay Monitor";
 /// The owner's icon, in the file's several sizes.
 const OWNER_ICON: &[u8] = include_bytes!("../assets/icon.ico");
 const FPS_NEEDS_ADMIN: &str = "frame counting needs admin or the Performance Log Users group";
-const NO_GPU: &str = "no GPU adapter was found";
 
 /// Why the overlay could not open.
 #[derive(Debug, thiserror::Error)]
@@ -50,25 +49,24 @@ pub fn modules_dir(exe: &Path) -> PathBuf {
     exe.with_file_name("modules")
 }
 
-/// Every sensor the overlay reads. One that cannot open on this machine reads as unavailable, so its line shows `—`
-/// and the others still work.
-pub fn build_sensors(modules: &Path, gpu_luid: Option<u64>, frames: Arc<FrameCounter>) -> Sensors {
-    let (gpu_load, gpu_temp) = match gpu_luid {
-        Some(luid) => (
-            or_unavailable(GpuLoad::open(luid)),
-            Box::new(GpuTemperature::new(luid)) as Box<dyn Sensor>,
-        ),
-        None => (unavailable(NO_GPU), unavailable(NO_GPU)),
-    };
+/// Every sensor the overlay reads, around the GPU pair already opened. One that cannot open on this machine reads as
+/// unavailable, so its line shows `—` and the others still work.
+pub fn build_sensors(modules: &Path, gpu: GpuPair, frames: Arc<FrameCounter>) -> Sensors {
     Sensors {
         fps: Box::new(FrameRate::new(frames, std::process::id())),
         cpu_load: Box::new(CpuLoad::new()),
         cpu_temp: or_unavailable(RyzenTemperature::open(modules)),
-        gpu_load,
-        gpu_temp,
+        gpu_load: gpu.load,
+        gpu_temp: gpu.temp,
         memory_load: Box::new(MemoryLoad::new()),
         memory_temp: or_unavailable(Ddr5Temperature::open(modules)),
     }
+}
+
+/// What the main thread tells the sampler.
+pub enum SamplerControl {
+    /// Follow these settings, and sample again at once.
+    Apply(Settings),
 }
 
 fn unavailable(reason: &str) -> Box<dyn Sensor> {
@@ -93,14 +91,16 @@ pub fn run() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    let gpu_luid = followed_gpu();
+    let settings = Settings::default();
+    let mut gpus = AdapterSensors::new(listed_adapters());
+    let gpu = gpus.open(settings.gpu.as_deref());
     let trace = start_frame_trace();
     let counter = FrameCounter::new();
-    let mut sensors = build_sensors(&own_modules_dir(), gpu_luid, Arc::clone(&counter));
+    let mut sensors = build_sensors(&own_modules_dir(), gpu, Arc::clone(&counter));
     if trace.is_none() {
         sensors.fps = unavailable(FPS_NEEDS_ADMIN);
     }
-    let sampler = Sampler::new(sensors, SystemClock);
+    let sampler = Sampler::new(sensors, Box::new(gpus), SystemClock, &settings);
     match show_overlay(sampler, trace, &counter) {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
@@ -121,14 +121,11 @@ fn install_subscriber() {
         .init();
 }
 
-/// The LUID of the adapter the GPU lines follow, or `None` when no adapter answers.
-fn followed_gpu() -> Option<u64> {
-    let adapters = gpu_adapters()
+/// Every GPU adapter Windows lists, or none when the list cannot be had.
+fn listed_adapters() -> Vec<GpuAdapter> {
+    gpu_adapters()
         .inspect_err(|error| tracing::warn!(?error, "list the GPU adapters"))
-        .unwrap_or_default();
-    let adapter = pick_adapter(&adapters)?;
-    tracing::info!(name = %adapter.name, "following this GPU");
-    Some(adapter.luid)
+        .unwrap_or_default()
 }
 
 /// The frame trace, or `None` when this account may not start one.
@@ -166,18 +163,18 @@ fn show_overlay(
     let view = OverlayView::new(overlay);
     view.show();
     let mut ui = Ui::new(view, tray, received, default_style());
-    let (stop, stopped) = mpsc::channel();
+    let (control, controls) = mpsc::channel();
     let waker = window.waker();
     let (session, consumer) = trace.unzip();
     std::thread::scope(|scope| {
-        scope.spawn(move || sample_until_stopped(&mut sampler, &frames, || waker.wake(), &stopped));
+        scope.spawn(move || sample_until_stopped(&mut sampler, &frames, || waker.wake(), &controls));
         if let Some(consumer) = consumer {
             scope.spawn(move || count_frames(consumer, counter));
         }
         run_message_loop(&window, &mut |event| ui.handle(&window, event));
-        // The scope joins both threads next: the sampler sees its stop sender gone, and the consumer's run ends with
+        // The scope joins both threads next: the sampler sees its control sender gone, and the consumer's run ends with
         // the session, even when stopping it fails.
-        drop(stop);
+        drop(control);
         if let Some(session) = &session
             && let Err(error) = session.stop()
         {
@@ -197,12 +194,13 @@ fn tray_icon_image() -> Result<Icon, Win32Error> {
         .or_else(|_| Icon::stock())
 }
 
-/// Sends a frame and wakes the UI to draw it once an interval, until `stop` gets a message or its sender is gone.
+/// Sends a frame and wakes the UI to draw it once an interval, and again at once after each `Apply`, until the control
+/// sender is gone.
 fn sample_until_stopped<C: Clock>(
     sampler: &mut Sampler<C>,
     frames: &Sender<OverlayFrame>,
     wake: impl Fn(),
-    stop: &Receiver<()>,
+    control: &Receiver<SamplerControl>,
 ) {
     loop {
         if frames.send(sampler.sample()).is_err() {
@@ -210,9 +208,10 @@ fn sample_until_stopped<C: Clock>(
             return;
         }
         wake();
-        match stop.recv_timeout(sampler.interval()) {
+        match control.recv_timeout(sampler.interval()) {
             Err(RecvTimeoutError::Timeout) => {}
-            Ok(()) | Err(RecvTimeoutError::Disconnected) => return,
+            Ok(SamplerControl::Apply(settings)) => sampler.apply(&settings),
+            Err(RecvTimeoutError::Disconnected) => return,
         }
     }
 }

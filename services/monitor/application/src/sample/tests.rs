@@ -1,11 +1,13 @@
+use std::collections::VecDeque;
 use std::sync::{Arc, Mutex, PoisonError};
+use std::time::Duration;
 
 use monitor_domain::Layout;
 use platform_clock::{Clock, Timestamp};
 
 use super::Sampler;
-use crate::testing::FakeSensor;
-use crate::{ReadError, Sensors};
+use crate::testing::{FakeGpuSensors, FakeSensor};
+use crate::{Extras, Line, ReadError, Sensor, Sensors, Settings, line_fields};
 
 /// A clock that stands still until the test advances it.
 #[derive(Clone)]
@@ -40,16 +42,64 @@ fn sensors(cpu_temp: FakeSensor) -> Sensors {
     }
 }
 
+fn sampler(sensors: Sensors, clock: StepClock) -> Sampler<StepClock> {
+    Sampler::new(
+        sensors,
+        Box::new(FakeGpuSensors::default()),
+        clock,
+        &Settings::default(),
+    )
+}
+
+fn sampler_with_gpus(sensors: Sensors, gpus: &FakeGpuSensors) -> Sampler<StepClock> {
+    Sampler::new(sensors, Box::new(gpus.clone()), StepClock::at(0), &Settings::default())
+}
+
+fn settings_with_gpu_fields() -> Settings {
+    let mut settings = Settings::default();
+    for line in &mut settings.lines {
+        if line.line == Line::Gpu {
+            line.fields = line_fields(Line::Gpu).to_vec();
+        }
+    }
+    settings
+}
+
+fn gpu_extras() -> Extras {
+    Extras {
+        gpu_fan_rpm: Some(1200.0),
+        gpu_memory_mhz: Some(644.0),
+        ..Extras::default()
+    }
+}
+
+/// A sensor whose extras differ per answer, which `FakeSensor` does not do.
+struct Scripted(VecDeque<(f64, Extras)>, Extras);
+
+impl Sensor for Scripted {
+    fn read(&mut self) -> Result<f64, ReadError> {
+        if let Some((value, extras)) = self.0.pop_front() {
+            self.1 = extras;
+            return Ok(value);
+        }
+        Err(ReadError::Unavailable(String::from("script over")))
+    }
+
+    fn extras(&self) -> Extras {
+        self.1.clone()
+    }
+}
+
 #[test]
 fn every_reading_appears_in_the_frame() {
-    let mut s = Sampler::new(sensors(FakeSensor::fixed(45.8)), StepClock::at(0));
+    let mut s = sampler(sensors(FakeSensor::fixed(45.8)), StepClock::at(0));
     assert_eq!(s.sample().lines[1], "CPU:   2.0 %, 45.8 °C");
 }
 
 #[test]
 fn an_unavailable_sensor_shows_a_dash_at_once() {
     let cpu_temp = FakeSensor::new(vec![Err(ReadError::Unavailable("no PawnIO".into()))]);
-    let mut s = Sampler::new(sensors(cpu_temp), StepClock::at(0));
+    let mut s = sampler(sensors(cpu_temp), StepClock::at(0));
     assert_eq!(s.sample().lines[1], "CPU:   2.0 %,    — °C");
 }
 
@@ -58,7 +108,7 @@ fn a_failed_read_keeps_the_last_value_until_it_is_stale() {
     let failed = || Err(ReadError::Failed("SMBus busy".into()));
     let cpu_temp = FakeSensor::new(vec![Ok(50.0), failed()]);
     let clock = StepClock::at(0);
-    let mut s = Sampler::new(sensors(cpu_temp), clock.clone());
+    let mut s = sampler(sensors(cpu_temp), clock.clone());
     s.sample();
     clock.advance(1);
     assert_eq!(s.sample().lines[1], "CPU:   2.0 %, 50.0 °C");
@@ -70,7 +120,7 @@ fn a_failed_read_keeps_the_last_value_until_it_is_stale() {
 fn a_non_finite_reading_is_treated_as_a_failed_read() {
     let cpu_temp = FakeSensor::new(vec![Ok(50.0), Ok(f64::NAN)]);
     let clock = StepClock::at(0);
-    let mut s = Sampler::new(sensors(cpu_temp), clock.clone());
+    let mut s = sampler(sensors(cpu_temp), clock.clone());
     s.sample();
     clock.advance(1);
     assert_eq!(s.sample().lines[1], "CPU:   2.0 %, 50.0 °C");
@@ -80,6 +130,114 @@ fn a_non_finite_reading_is_treated_as_a_failed_read() {
 
 #[test]
 fn the_interval_is_the_layouts() {
-    let s = Sampler::new(sensors(FakeSensor::fixed(1.0)), StepClock::at(0));
+    let s = sampler(sensors(FakeSensor::fixed(1.0)), StepClock::at(0));
     assert_eq!(s.interval(), Layout::default().interval.unsigned_abs());
+}
+
+#[test]
+fn applying_new_lines_and_labels_changes_the_next_frame() {
+    let mut s = sampler(sensors(FakeSensor::fixed(45.8)), StepClock::at(0));
+    let mut settings = Settings::default();
+    for line in &mut settings.lines {
+        match line.line {
+            Line::Cpu => line.enabled = false,
+            Line::Fps => line.label = String::from("Frames"),
+            Line::Gpu | Line::Memory => {}
+        }
+    }
+    s.apply(&settings);
+    let lines = s.sample().lines;
+    assert!(lines[0].starts_with("Frames:"), "{lines:?}");
+    assert!(lines.iter().all(|l| !l.starts_with("CPU:")), "{lines:?}");
+}
+
+#[test]
+fn applying_a_new_interval_changes_the_wait() {
+    let mut s = sampler(sensors(FakeSensor::fixed(1.0)), StepClock::at(0));
+    s.apply(&Settings {
+        update_interval: Duration::from_secs(2),
+        ..Settings::default()
+    });
+    assert_eq!(s.interval(), Duration::from_secs(2));
+    s.apply(&Settings {
+        update_interval: Duration::from_secs(30),
+        ..Settings::default()
+    });
+    assert_eq!(s.interval(), Duration::from_secs(5));
+}
+
+#[test]
+fn choosing_another_gpu_opens_it_and_drops_the_old_gpu_values() {
+    let gpus = FakeGpuSensors::default();
+    let mut s = sampler_with_gpus(sensors(FakeSensor::fixed(1.0)), &gpus);
+    assert_eq!(s.sample().lines[2], "GPU:   4.0 %, 56.0 °C");
+    s.apply(&Settings {
+        gpu: Some(String::from("B")),
+        ..Settings::default()
+    });
+    assert_eq!(gpus.opened(), vec![Some(String::from("B"))]);
+    assert_eq!(s.sample().lines[2], "GPU:  11.0 %, 66.0 °C");
+}
+
+#[test]
+fn keeping_the_same_gpu_leaves_its_sensors_alone() {
+    let gpus = FakeGpuSensors::default();
+    let mut s = sampler_with_gpus(sensors(FakeSensor::fixed(1.0)), &gpus);
+    s.apply(&Settings::default());
+    assert_eq!(gpus.opened(), Vec::<Option<String>>::new());
+}
+
+#[test]
+fn extra_values_come_from_the_sensor_that_owns_them() {
+    let mut sensors = sensors(FakeSensor::fixed(1.0));
+    sensors.gpu_temp = Box::new(FakeSensor::fixed(56.0).with_extras(gpu_extras()));
+    let mut s = sampler(sensors, StepClock::at(0));
+    s.apply(&settings_with_gpu_fields());
+    let gpu = s.sample().lines[2].clone();
+    assert!(gpu.contains("1200 rpm,  644 MHz, video     — %"), "{gpu}");
+}
+
+#[test]
+fn a_failed_read_keeps_its_extras_until_stale_and_unavailable_clears_them() {
+    let failed = || Err(ReadError::Failed("busy".into()));
+    let unavailable = || Err(ReadError::Unavailable("gone".into()));
+    let mut sensors = sensors(FakeSensor::fixed(1.0));
+    sensors.gpu_temp = Box::new(FakeSensor::new(vec![Ok(56.0), failed(), unavailable()]).with_extras(gpu_extras()));
+    let clock = StepClock::at(0);
+    let mut s = sampler(sensors, clock.clone());
+    s.apply(&settings_with_gpu_fields());
+    s.sample();
+    clock.advance(1);
+    let kept = s.sample().lines[2].clone();
+    assert!(kept.contains("1200 rpm"), "{kept}");
+    let cleared = s.sample().lines[2].clone();
+    assert!(cleared.contains("   — rpm,    — MHz"), "{cleared}");
+}
+
+#[test]
+fn an_extra_the_sensor_does_not_give_shows_a_dash_at_once() {
+    let mut sensors = sensors(FakeSensor::fixed(1.0));
+    sensors.gpu_temp = Box::new(Scripted(
+        VecDeque::from([(56.0, gpu_extras()), (56.0, Extras::default())]),
+        Extras::default(),
+    ));
+    let mut s = sampler(sensors, StepClock::at(0));
+    s.apply(&settings_with_gpu_fields());
+    assert!(s.sample().lines[2].contains("1200 rpm"));
+    let line = s.sample().lines[2].clone();
+    assert!(line.contains("   — rpm,    — MHz"), "{line}");
+}
+
+#[test]
+fn swapping_the_gpu_clears_its_extras() {
+    let mut sensors = sensors(FakeSensor::fixed(1.0));
+    sensors.gpu_temp = Box::new(FakeSensor::fixed(56.0).with_extras(gpu_extras()));
+    let mut s = sampler(sensors, StepClock::at(0));
+    let mut settings = settings_with_gpu_fields();
+    s.apply(&settings);
+    assert!(s.sample().lines[2].contains("1200 rpm"));
+    settings.gpu = Some(String::from("B"));
+    s.apply(&settings);
+    let line = s.sample().lines[2].clone();
+    assert!(line.contains("   — rpm,    — MHz"), "{line}");
 }

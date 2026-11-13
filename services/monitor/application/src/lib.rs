@@ -8,7 +8,7 @@ mod style;
 #[cfg(any(test, feature = "test-support"))]
 pub mod testing;
 
-pub use ports::{ReadError, Sensor, Sensors, SettingsStore};
+pub use ports::{Extras, GpuPair, GpuSensors, ReadError, Sensor, Sensors, SettingsStore};
 pub use sample::{OverlayFrame, Sampler};
 pub use settings::{
     Field, InvalidShortcut, Line, LineSettings, LoadSettingsError, OverlayPosition, SaveSettingsError, Settings,

@@ -2,10 +2,12 @@
 
 use std::collections::BTreeMap;
 
-use monitor_application::{ReadError, Sensor};
+use monitor_application::{GpuPair, GpuSensors, ReadError, Sensor};
 use platform_win32::Win32Error;
 use platform_win32::gpu::{GpuAdapter, gpu_temperature_deci_c};
 use platform_win32::pdh::CounterArray;
+
+use crate::{UnavailableSensor, or_unavailable};
 
 const ENGINE_UTILIZATION: &str = r"\GPU Engine(*)\Utilization Percentage";
 
@@ -31,6 +33,44 @@ fn failed(error: GpuError) -> ReadError {
 #[must_use]
 pub fn pick_adapter(adapters: &[GpuAdapter]) -> Option<&GpuAdapter> {
     adapters.iter().max_by_key(|a| a.dedicated_bytes)
+}
+
+/// The adapter named `name` exactly, else the default pick: an unknown name (a card that was removed) still shows a GPU.
+#[must_use]
+pub fn adapter_for<'a>(adapters: &'a [GpuAdapter], name: Option<&str>) -> Option<&'a GpuAdapter> {
+    name.and_then(|name| adapters.iter().find(|a| a.name == name))
+        .or_else(|| pick_adapter(adapters))
+}
+
+const NO_GPU: &str = "no GPU adapter was found";
+
+/// Opens the sensors of whichever listed adapter the settings choose.
+#[derive(Debug)]
+pub struct AdapterSensors {
+    adapters: Vec<GpuAdapter>,
+}
+
+impl AdapterSensors {
+    #[must_use]
+    pub fn new(adapters: Vec<GpuAdapter>) -> Self {
+        Self { adapters }
+    }
+}
+
+impl GpuSensors for AdapterSensors {
+    fn open(&mut self, name: Option<&str>) -> GpuPair {
+        let Some(adapter) = adapter_for(&self.adapters, name) else {
+            return GpuPair {
+                load: Box::new(UnavailableSensor(NO_GPU.to_owned())),
+                temp: Box::new(UnavailableSensor(NO_GPU.to_owned())),
+            };
+        };
+        tracing::info!(name = %adapter.name, "following this GPU");
+        GpuPair {
+            load: or_unavailable(GpuLoad::open(adapter.luid)),
+            temp: Box::new(GpuTemperature::new(adapter.luid)),
+        }
+    }
 }
 
 /// The busiest engine type of one adapter, summed over processes, at most 100.
