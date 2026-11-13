@@ -68,7 +68,7 @@ fn load_never_reads_above_100_percent() {
 #[ignore = "needs a GPU whose driver reports temperature"]
 fn the_followed_gpu_reports_a_plausible_temperature() {
     let a = pick_adapter(&gpu_adapters().unwrap()).cloned().unwrap();
-    let t = GpuTemperature::new(a.luid).read().unwrap();
+    let t = GpuTemperature::new(a.luid, &a.name).read().unwrap();
     assert!((20.0..=100.0).contains(&t), "{} {t}", a.name);
 }
 
@@ -125,4 +125,14 @@ fn an_adapter_without_video_engines_has_no_video_load() {
         None
     );
     assert_eq!(video_load_percent(&[], 0xD3E5), None);
+}
+
+#[test]
+fn the_gpu_sensors_name_their_adapter_in_the_details() {
+    assert_eq!(
+        GpuTemperature::new(0xD3E5, "AMD Radeon RX 9060 XT")
+            .details()
+            .as_deref(),
+        Some("adapter AMD Radeon RX 9060 XT")
+    );
 }

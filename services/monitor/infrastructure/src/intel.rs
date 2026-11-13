@@ -55,6 +55,20 @@ impl Sensor for IntelTemperature {
         let status = call_one(&self.module, "ioctl_read_msr", &[PACKAGE_THERM_STATUS])?;
         package_celsius(status, target)
     }
+
+    fn details(&self) -> Option<String> {
+        Some(details(self.temperature_target))
+    }
+}
+
+fn details(temperature_target: Option<u64>) -> String {
+    match temperature_target {
+        Some(target) => {
+            let [_, _, tj_max, ..] = target.to_le_bytes();
+            format!("{MODULE}; TjMax {tj_max} °C")
+        }
+        None => format!("{MODULE}; TjMax not read yet"),
+    }
 }
 
 /// `TjMax` minus the digital readout; a `TjMax` of 0 means the register is not implemented.

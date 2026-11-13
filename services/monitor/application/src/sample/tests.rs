@@ -241,3 +241,126 @@ fn swapping_the_gpu_clears_its_extras() {
     let line = s.sample().lines[2].clone();
     assert!(line.contains("   — rpm,    — MHz"), "{line}");
 }
+
+fn outcomes(s: &Sampler<StepClock>) -> Vec<(&'static str, String)> {
+    s.report().into_iter().map(|r| (r.reading, r.outcome)).collect()
+}
+
+#[derive(Debug, thiserror::Error)]
+#[error("lock stayed held")]
+struct Busy(#[source] Underlying);
+
+#[derive(Debug, thiserror::Error)]
+#[error("by another program")]
+struct Underlying;
+
+#[test]
+fn the_report_has_every_reading_with_its_value_or_error() {
+    let mut sensors = sensors(FakeSensor::new(vec![Err(ReadError::Failed(Box::new(Busy(
+        Underlying,
+    ))))]));
+    sensors.cpu_load = Box::new(FakeSensor::new(vec![Err(ReadError::Unavailable("no counter".into()))]));
+    sensors.fps = Box::new(FakeSensor::fixed(f64::NAN));
+    let mut s = sampler(sensors, StepClock::at(0));
+    s.sample();
+
+    let report = outcomes(&s);
+
+    let names: Vec<_> = report.iter().map(|(name, _)| *name).collect();
+    assert_eq!(
+        names,
+        [
+            "FPS",
+            "CPU load",
+            "CPU temperature",
+            "GPU load",
+            "GPU temperature",
+            "Memory load",
+            "Memory temperature",
+            "Worst frame (ms)",
+            "GPU fan (rpm)",
+            "GPU VRAM clock (MHz)",
+            "GPU video load",
+            "Memory used (GB)",
+            "Memory sticks (°C)",
+        ]
+    );
+    let texts: Vec<_> = report.iter().take(7).map(|(_, text)| text.as_str()).collect();
+    assert_eq!(
+        texts,
+        [
+            "failed: the reading was not a finite number",
+            "unavailable: no counter",
+            "failed: lock stayed held: by another program",
+            "4.0",
+            "56.0",
+            "30.9",
+            "35.5",
+        ]
+    );
+}
+
+#[test]
+fn a_reading_not_read_yet_says_so() {
+    let s = sampler(sensors(FakeSensor::fixed(1.0)), StepClock::at(0));
+
+    let report = outcomes(&s);
+
+    assert!(
+        report.iter().take(7).all(|(_, text)| text == "not read yet"),
+        "{report:?}"
+    );
+    assert!(
+        report.iter().skip(7).all(|(_, text)| text == "not reported"),
+        "{report:?}"
+    );
+}
+
+#[test]
+fn details_come_from_the_sensor() {
+    let mut sensors = sensors(FakeSensor::fixed(45.0).with_details("IntelMSR.bin; TjMax 100 °C"));
+    sensors.fps = Box::new(FakeSensor::fixed(30.0));
+    let s = sampler(sensors, StepClock::at(0));
+
+    let details: Vec<_> = s.report().into_iter().map(|r| r.details).collect();
+
+    assert_eq!(details[2].as_deref(), Some("IntelMSR.bin; TjMax 100 °C"));
+    assert_eq!(details[0], None);
+    assert!(details.iter().skip(7).all(Option::is_none));
+}
+
+#[test]
+fn extras_are_reported_even_when_no_line_shows_them() {
+    let mut sensors = sensors(FakeSensor::fixed(1.0));
+    sensors.gpu_temp = Box::new(FakeSensor::fixed(56.0).with_extras(gpu_extras()));
+    let mut s = sampler(sensors, StepClock::at(0));
+    s.sample();
+
+    let report = outcomes(&s);
+
+    assert!(
+        report.contains(&("GPU fan (rpm)", String::from("1200.0"))),
+        "the default layout does not tick the fan: {report:?}"
+    );
+    assert!(
+        report.contains(&("GPU VRAM clock (MHz)", String::from("644.0"))),
+        "{report:?}"
+    );
+    assert!(
+        report.contains(&("GPU video load", String::from("not reported"))),
+        "{report:?}"
+    );
+}
+
+#[test]
+fn sticks_are_reported_joined_by_slashes() {
+    let mut sensors = sensors(FakeSensor::fixed(1.0));
+    sensors.memory_temp = Box::new(FakeSensor::fixed(36.3).with_extras(Extras {
+        stick_celsius: Some(vec![36.3, 33.3]),
+        ..Extras::default()
+    }));
+    let mut s = sampler(sensors, StepClock::at(0));
+    s.sample();
+
+    assert!(outcomes(&s).contains(&("Memory sticks (°C)", String::from("36.3/33.3"))));
+}

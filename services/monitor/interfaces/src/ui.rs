@@ -1,12 +1,13 @@
 //! What the tray icon and the menus do to the overlay: a pure state machine, and the glue that applies its actions.
 
-use std::sync::mpsc::{Receiver, Sender};
+use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, channel};
 use std::time::{Duration, Instant};
 
 use monitor_application::{
-    DriverStatus, OverlayFrame, OverlayStyle, SamplerControl, Settings, SettingsStore, StartupTask, blank_frame,
-    overlay_style,
+    DriverStatus, OverlayFrame, OverlayStyle, ReadingReport, SamplerControl, Settings, SettingsStore, StartupTask,
+    SystemInfo, blank_frame, diagnostics_report, overlay_style,
 };
+use platform_win32::clipboard::set_text;
 use platform_win32::dialog::DialogChange;
 use platform_win32::foreground::ForegroundWindow;
 use platform_win32::menu::{MenuItem, show_popup_menu};
@@ -24,6 +25,9 @@ const SHOW_OVERLAY: u16 = 1;
 const EXIT: u16 = 2;
 const LOCK: u16 = 3;
 const SETTINGS: u16 = 4;
+const COPY_DIAGNOSTICS: u16 = 5;
+/// A sampler busy in a slow read still answers within this; a longer wait would freeze the menu.
+const REPORT_WAIT: Duration = Duration::from_secs(2);
 
 /// Whether the overlay is shown and whether it is locked in place, the facts the events and commands depend on.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -54,6 +58,8 @@ pub enum Action {
     CheckStalled,
     /// Open the settings window, or bring the open one to the front.
     OpenSettings,
+    /// Put the diagnostics report on the clipboard.
+    CopyDiagnostics,
     Exit,
 }
 
@@ -77,6 +83,7 @@ impl UiState {
             SHOW_OVERLAY => self.toggle(),
             LOCK => self.toggle_lock(),
             SETTINGS => vec![Action::OpenSettings],
+            COPY_DIAGNOSTICS => vec![Action::CopyDiagnostics],
             EXIT => vec![Action::Exit],
             _ => Vec::new(),
         }
@@ -118,11 +125,27 @@ pub fn menu_items(state: &UiState) -> Vec<MenuItem> {
             checked: false,
         },
         MenuItem {
+            id: COPY_DIAGNOSTICS,
+            text: String::from("Copy diagnostics"),
+            checked: false,
+        },
+        MenuItem {
             id: EXIT,
             text: String::from("Exit"),
             checked: false,
         },
     ]
+}
+
+/// The sampler's readings, or the one line that says it was silent.
+pub(crate) fn readings_or_silence(answer: Result<Vec<ReadingReport>, RecvTimeoutError>) -> Vec<ReadingReport> {
+    answer.unwrap_or_else(|_silent| {
+        vec![ReadingReport {
+            reading: "Sampler",
+            outcome: String::from("did not answer within 2 s"),
+            details: None,
+        }]
+    })
 }
 
 /// Whether the window that was in front before the menu opened gets the focus back, given what was chosen (`None`
@@ -167,6 +190,8 @@ pub struct UiParts {
     pub startup: Box<dyn StartupTask>,
     /// Says whether `PawnIO` is installed, each time the settings window opens.
     pub driver: Box<dyn DriverStatus>,
+    /// Says what this machine is, when the diagnostics are copied.
+    pub system: Box<dyn SystemInfo>,
 }
 
 /// The UI thread's state: the overlay, the tray icon, the sampler's frames, and the settings.
@@ -192,6 +217,7 @@ pub struct Ui {
     gpu_names: Vec<String>,
     startup: Box<dyn StartupTask>,
     driver: Box<dyn DriverStatus>,
+    system: Box<dyn SystemInfo>,
     settings_window: Option<SettingsWindow>,
 }
 
@@ -209,6 +235,7 @@ impl Ui {
             gpu_names,
             startup,
             driver,
+            system,
         } = parts;
         let shortcuts = Shortcuts::register(window, &settings);
         // A locked overlay can only be unlocked from the tray menu or by its shortcut; without the shortcut it starts
@@ -245,6 +272,7 @@ impl Ui {
             gpu_names,
             startup,
             driver,
+            system,
             settings_window: None,
         };
         if lock_dropped {
@@ -296,6 +324,7 @@ impl Ui {
             Action::SaveSettings => self.save_settings(),
             Action::SetLocked(locked) => self.set_locked(locked),
             Action::OpenSettings => self.open_settings(window),
+            Action::CopyDiagnostics => self.copy_diagnostics(window),
             Action::ShowMenu { x, y } => return self.choose_from_menu(window, x, y),
             Action::Exit => return Flow::Exit,
         }
@@ -348,6 +377,20 @@ impl Ui {
         );
         if let Err(error) = self.store.save(&kept) {
             tracing::warn!(?error, "the settings could not be saved");
+        }
+    }
+
+    /// Asks the sampler for its readings, joins them with the machine's facts, and copies the text. A failure is
+    /// logged; there is nothing else to do with it.
+    fn copy_diagnostics(&self, window: &MessageWindow) {
+        let (reply, answer) = channel();
+        let readings = match self.sampler.send(SamplerControl::Report(reply)) {
+            Ok(()) => readings_or_silence(answer.recv_timeout(REPORT_WAIT)),
+            Err(_gone) => readings_or_silence(Err(RecvTimeoutError::Disconnected)),
+        };
+        let report = diagnostics_report(&self.system.facts(), &readings);
+        if let Err(error) = set_text(window, &report) {
+            tracing::warn!(?error, "the diagnostics could not be copied to the clipboard");
         }
     }
 

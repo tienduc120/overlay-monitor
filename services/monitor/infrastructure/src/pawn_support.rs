@@ -90,8 +90,8 @@ impl DriverStatus for PawnIoProbe {
 }
 
 enum Reopening<S> {
-    /// No sensor yet; each read asks the driver again, so an install while the app runs is noticed.
-    Waiting,
+    /// No sensor yet; each read asks the driver again, so an install while the app runs is noticed. Holds why not.
+    Waiting(String),
     Open(S),
     /// The module refuses this machine or its file is missing; asking again would change nothing.
     GivenUp(String),
@@ -113,11 +113,13 @@ where
         match &mut self.state {
             Reopening::Open(sensor) => return sensor.read(),
             Reopening::GivenUp(reason) => return Err(ReadError::Unavailable(reason.clone())),
-            Reopening::Waiting => {}
+            Reopening::Waiting(_) => {}
         }
         let status = (self.probe)();
         if !matches!(status, PawnIoStatus::Installed { .. }) {
-            return Err(ReadError::Unavailable(status.describe()));
+            let reason = status.describe();
+            self.state = Reopening::Waiting(reason.clone());
+            return Err(ReadError::Unavailable(reason));
         }
         match (self.open)() {
             Ok(mut sensor) => {
@@ -136,7 +138,14 @@ where
     fn extras(&self) -> Extras {
         match &self.state {
             Reopening::Open(sensor) => sensor.extras(),
-            Reopening::Waiting | Reopening::GivenUp(_) => Extras::default(),
+            Reopening::Waiting(_) | Reopening::GivenUp(_) => Extras::default(),
+        }
+    }
+
+    fn details(&self) -> Option<String> {
+        match &self.state {
+            Reopening::Open(sensor) => sensor.details(),
+            Reopening::Waiting(reason) | Reopening::GivenUp(reason) => Some(format!("not opened: {reason}")),
         }
     }
 }
@@ -150,7 +159,7 @@ pub fn reopening<S: Sensor + 'static>(
     Box::new(ReopeningSensor {
         probe,
         open,
-        state: Reopening::Waiting,
+        state: Reopening::Waiting(String::from("not read yet")),
     })
 }
 

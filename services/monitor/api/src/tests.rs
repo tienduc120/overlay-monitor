@@ -178,3 +178,25 @@ fn an_unavailable_startup_task_answers_why_to_every_change() {
 
     assert_eq!(refused, ["the user is unknown", "the user is unknown"]);
 }
+
+#[test]
+fn a_report_request_is_answered_without_sampling() {
+    let mut sampler = sampler();
+    let (frames, received) = mpsc::channel();
+    let (control, controlled) = mpsc::channel::<SamplerControl>();
+    let (reply, answer) = mpsc::channel();
+    control.send(SamplerControl::Report(reply)).unwrap();
+    drop(control);
+
+    sample_until_stopped(&mut sampler, &frames, || {}, &controlled);
+
+    let readings = answer.try_recv().expect("the sampler answered");
+    assert_eq!(readings.len(), 13, "seven sensors, then six extras");
+    assert_eq!(readings[0].reading, "FPS");
+    assert_eq!(readings[7].reading, "Worst frame (ms)");
+    assert_eq!(
+        received.try_iter().count(),
+        1,
+        "only the first frame: a report does not sample"
+    );
+}

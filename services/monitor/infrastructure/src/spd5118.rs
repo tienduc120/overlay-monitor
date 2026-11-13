@@ -54,6 +54,8 @@ pub(crate) struct HubReader<B> {
     bus: B,
     lock: &'static str,
     hubs: Option<Vec<u8>>,
+    /// The controller, as text, once the first scan has asked it.
+    controller: Option<String>,
     /// The last reading of each hub, in address order.
     last: Vec<f64>,
 }
@@ -68,6 +70,7 @@ impl<B: SmbusRead> HubReader<B> {
             bus,
             lock,
             hubs: None,
+            controller: None,
             last: Vec::new(),
         }
     }
@@ -75,11 +78,17 @@ impl<B: SmbusRead> HubReader<B> {
     /// Scans on the first read, under the bus lock. A lock that is busy or a bus that errors fails this read and
     /// leaves the scan for the next one; only a completed scan settles that there is no hub.
     pub(crate) fn read(&mut self) -> Result<f64, ReadError> {
-        let Self { bus, lock, hubs, last } = self;
+        let Self {
+            bus,
+            lock,
+            hubs,
+            controller,
+            last,
+        } = self;
         with_lock(lock, || {
             if hubs.is_none() {
                 *hubs = Some(scan_hubs(bus)?);
-                log_identity(bus);
+                *controller = identity_text(bus);
             }
             let known = hubs.as_deref().unwrap_or_default();
             if known.is_empty() {
@@ -98,16 +107,39 @@ impl<B: SmbusRead> HubReader<B> {
 }
 
 impl<B> HubReader<B> {
+    /// The controller and each hub with its last reading, for the diagnostics report.
+    pub(crate) fn details(&self) -> String {
+        let hubs = match self.hubs.as_deref() {
+            None => return String::from("not scanned yet"),
+            Some([]) => String::from("no SPD5118 hub found"),
+            Some(found) => {
+                let each: Vec<String> = found
+                    .iter()
+                    .enumerate()
+                    .map(|(n, address)| match self.last.get(n) {
+                        Some(celsius) => format!("{address:#04X} ({celsius:.1} °C)"),
+                        None => format!("{address:#04X}"),
+                    })
+                    .collect();
+                format!("SPD5118 hubs at {}", each.join(", "))
+            }
+        };
+        match &self.controller {
+            Some(controller) => format!("{controller}; {hubs}"),
+            None => hubs,
+        }
+    }
+
     /// Each stick's last reading in address order; `None` until a scan has found hubs.
     pub(crate) fn sticks(&self) -> Option<Vec<f64>> {
         (!self.last.is_empty()).then(|| self.last.clone())
     }
 }
 
-fn log_identity<B: SmbusRead>(bus: &B) {
-    if let Some(words) = bus.identity() {
-        tracing::info!(controller = %describe_identity(words), "DDR5 SMBus controller");
-    }
+fn identity_text<B: SmbusRead>(bus: &B) -> Option<String> {
+    let text = describe_identity(bus.identity()?);
+    tracing::info!(controller = %text, "DDR5 SMBus controller");
+    Some(text)
 }
 
 /// An empty slot does not answer, so one failed address is normal; a scan where nothing answered is not.
@@ -139,6 +171,7 @@ fn scan_hubs<B: SmbusRead>(bus: &B) -> Result<Vec<u8>, ReadError> {
 /// The hottest `DDR5` module's temperature in degrees Celsius.
 pub struct Ddr5Temperature {
     reader: HubReader<PawnModule>,
+    module: &'static str,
 }
 
 impl Ddr5Temperature {
@@ -147,9 +180,10 @@ impl Ddr5Temperature {
     /// # Errors
     /// `Unavailable` when the module file, `PawnIO`, elevation, or a supported chipset is missing; `Failed` otherwise.
     pub fn open(modules_dir: &Path, vendor: &CpuVendor) -> Result<Self, ReadError> {
-        let module = load_first(modules_dir, smbus_modules(*vendor))?;
+        let (module, file) = load_first(modules_dir, smbus_modules(*vendor))?;
         Ok(Self {
             reader: HubReader::new(module, SMBUS_LOCK),
+            module: file,
         })
     }
 }
@@ -173,6 +207,10 @@ impl Sensor for Ddr5Temperature {
             ..Extras::default()
         }
     }
+
+    fn details(&self) -> Option<String> {
+        Some(format!("{}; {}", self.module, self.reader.details()))
+    }
 }
 
 /// The `SMBus` modules in the order to try: the CPU's vendor says which chipset family is likely.
@@ -185,13 +223,13 @@ pub(crate) fn smbus_modules(vendor: CpuVendor) -> [&'static str; 2] {
 
 /// Loads the first module the machine accepts; a module that does not suit this chipset is `Unavailable`, so the next
 /// is tried, and when none loads the preferred module's reason is the one reported.
-fn load_first(modules_dir: &Path, files: [&'static str; 2]) -> Result<PawnModule, ReadError> {
+fn load_first(modules_dir: &Path, files: [&'static str; 2]) -> Result<(PawnModule, &'static str), ReadError> {
     let [preferred, fallback] = files;
     match load_module(modules_dir, preferred) {
-        Err(ReadError::Unavailable(reason)) => {
-            load_module(modules_dir, fallback).map_err(|_second| ReadError::Unavailable(reason))
-        }
-        other => other,
+        Err(ReadError::Unavailable(reason)) => load_module(modules_dir, fallback)
+            .map(|module| (module, fallback))
+            .map_err(|_second| ReadError::Unavailable(reason)),
+        other => other.map(|module| (module, preferred)),
     }
 }
 

@@ -53,6 +53,11 @@ Each line shows the values the settings turn on, in this order. A missing or sta
 
 The app keeps its settings in `%APPDATA%\OverlayMonitor\settings.toml`, created on the first change. The app rewrites the file when a setting changes, so edit it while the app is closed. Every key is optional; a file that cannot be read is kept as `settings.toml.bad` and the defaults are used. The keys and the rules are in [ADR-0018](docs/adr/0018-the-settings-file.md).
 
+## Diagnostics
+
+Choose **Copy diagnostics** from the tray or overlay menu and the app puts a plain-text report on the clipboard: the app and Windows versions, the CPU, the memory type, the state of PawnIO, each graphics adapter and whether its temperature can be read, and every reading with its value or the error that stopped it (extra values included, shown or not), each with the module, bus, or adapter it came from.
+Paste it into a message or an issue, so a friend can see why a reading shows a dash.
+
 ## Quick start
 
 You need rustup (it reads `rust-toolchain.toml`), Git, and on Windows the Visual Studio Build Tools with the C++ workload.

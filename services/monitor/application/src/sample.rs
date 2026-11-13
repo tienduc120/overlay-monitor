@@ -1,3 +1,5 @@
+use std::error::Error;
+use std::sync::mpsc::Sender;
 use std::time::Duration;
 
 use monitor_domain::{Layout, Sample, Snapshot, Sticks, clamp_interval};
@@ -11,6 +13,37 @@ use crate::{Extras, GpuSensors, ReadError, Sensor, Sensors, Settings};
 pub enum SamplerControl {
     /// Follow these settings, and sample again at once.
     Apply(Settings),
+    /// Answer with every reading as it stands, without sampling again.
+    Report(Sender<Vec<ReadingReport>>),
+}
+
+/// What one reading last said.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub enum Outcome {
+    #[default]
+    NotYet,
+    Value(f64),
+    Unavailable(String),
+    Failed(String),
+}
+
+impl Outcome {
+    fn text(&self) -> String {
+        match self {
+            Self::NotYet => String::from("not read yet"),
+            Self::Value(value) => format!("{value:.1}"),
+            Self::Unavailable(reason) => format!("unavailable: {reason}"),
+            Self::Failed(error) => format!("failed: {error}"),
+        }
+    }
+}
+
+/// One reading as the diagnostics report lists it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ReadingReport {
+    pub reading: &'static str,
+    pub outcome: String,
+    pub details: Option<String>,
 }
 
 /// The text lines to draw for one round of readings.
@@ -28,11 +61,24 @@ pub struct Sampler<C> {
     clock: C,
     layout: Layout,
     snapshot: Snapshot,
+    outcomes: Outcomes,
+}
+
+/// What each sensor's last read said, for the report.
+#[derive(Default)]
+struct Outcomes {
+    fps: Outcome,
+    cpu_load: Outcome,
+    cpu_temp: Outcome,
+    gpu_load: Outcome,
+    gpu_temp: Outcome,
+    memory_load: Outcome,
+    memory_temp: Outcome,
 }
 
 /// What one read did to its slot, which decides what happens to the extras that came with it.
 #[derive(Clone, Copy)]
-enum Outcome {
+enum ReadEffect {
     Fresh,
     Kept,
     Cleared,
@@ -48,6 +94,7 @@ impl<C: Clock> Sampler<C> {
             clock,
             layout: layout_for(settings),
             snapshot: Snapshot::default(),
+            outcomes: Outcomes::default(),
         }
     }
 
@@ -66,6 +113,8 @@ impl<C: Clock> Sampler<C> {
             snapshot.gpu_fan_rpm = None;
             snapshot.gpu_memory_mhz = None;
             snapshot.gpu_video_load = None;
+            self.outcomes.gpu_load = Outcome::NotYet;
+            self.outcomes.gpu_temp = Outcome::NotYet;
         }
     }
 
@@ -73,23 +122,54 @@ impl<C: Clock> Sampler<C> {
     pub fn sample(&mut self) -> OverlayFrame {
         let now = self.clock.now();
         let (sensors, snapshot) = (&mut self.sensors, &mut self.snapshot);
-        let outcome = update(&mut snapshot.fps, "fps", sensors.fps.as_mut(), now);
+        let outcome = update(
+            &mut snapshot.fps,
+            &mut self.outcomes.fps,
+            "fps",
+            sensors.fps.as_mut(),
+            now,
+        );
         if let Some(extras) = extras_after(outcome, sensors.fps.as_ref()) {
             set_extra(&mut snapshot.worst_frame_ms, extras.worst_frame_ms, now);
         }
-        update(&mut snapshot.cpu_load, "cpu_load", sensors.cpu_load.as_mut(), now);
-        update(&mut snapshot.cpu_temp, "cpu_temp", sensors.cpu_temp.as_mut(), now);
-        let outcome = update(&mut snapshot.gpu_load, "gpu_load", sensors.gpu_load.as_mut(), now);
+        update(
+            &mut snapshot.cpu_load,
+            &mut self.outcomes.cpu_load,
+            "cpu_load",
+            sensors.cpu_load.as_mut(),
+            now,
+        );
+        update(
+            &mut snapshot.cpu_temp,
+            &mut self.outcomes.cpu_temp,
+            "cpu_temp",
+            sensors.cpu_temp.as_mut(),
+            now,
+        );
+        let outcome = update(
+            &mut snapshot.gpu_load,
+            &mut self.outcomes.gpu_load,
+            "gpu_load",
+            sensors.gpu_load.as_mut(),
+            now,
+        );
         if let Some(extras) = extras_after(outcome, sensors.gpu_load.as_ref()) {
             set_extra(&mut snapshot.gpu_video_load, extras.gpu_video_load, now);
         }
-        let outcome = update(&mut snapshot.gpu_temp, "gpu_temp", sensors.gpu_temp.as_mut(), now);
+        let outcome = update(
+            &mut snapshot.gpu_temp,
+            &mut self.outcomes.gpu_temp,
+            "gpu_temp",
+            sensors.gpu_temp.as_mut(),
+            now,
+        );
         if let Some(extras) = extras_after(outcome, sensors.gpu_temp.as_ref()) {
             set_extra(&mut snapshot.gpu_fan_rpm, extras.gpu_fan_rpm, now);
             set_extra(&mut snapshot.gpu_memory_mhz, extras.gpu_memory_mhz, now);
         }
         let outcome = update(
             &mut snapshot.memory_load,
+            &mut self.outcomes.memory_load,
             "memory_load",
             sensors.memory_load.as_mut(),
             now,
@@ -99,6 +179,7 @@ impl<C: Clock> Sampler<C> {
         }
         let outcome = update(
             &mut snapshot.memory_temp,
+            &mut self.outcomes.memory_temp,
             "memory_temp",
             sensors.memory_temp.as_mut(),
             now,
@@ -109,6 +190,59 @@ impl<C: Clock> Sampler<C> {
         OverlayFrame {
             lines: self.layout.render(&self.snapshot, now),
         }
+    }
+
+    /// Every reading as it last stood: the seven sensors, then the extras whether or not a line shows them. Reads
+    /// no hardware.
+    pub fn report(&self) -> Vec<ReadingReport> {
+        let (sensors, outcomes) = (&self.sensors, &self.outcomes);
+        let sensor = |reading, outcome: &Outcome, sensor: &dyn Sensor| ReadingReport {
+            reading,
+            outcome: outcome.text(),
+            details: sensor.details(),
+        };
+        let mut report = vec![
+            sensor("FPS", &outcomes.fps, sensors.fps.as_ref()),
+            sensor("CPU load", &outcomes.cpu_load, sensors.cpu_load.as_ref()),
+            sensor("CPU temperature", &outcomes.cpu_temp, sensors.cpu_temp.as_ref()),
+            sensor("GPU load", &outcomes.gpu_load, sensors.gpu_load.as_ref()),
+            sensor("GPU temperature", &outcomes.gpu_temp, sensors.gpu_temp.as_ref()),
+            sensor("Memory load", &outcomes.memory_load, sensors.memory_load.as_ref()),
+            sensor(
+                "Memory temperature",
+                &outcomes.memory_temp,
+                sensors.memory_temp.as_ref(),
+            ),
+        ];
+        report.extend(self.extras_report());
+        report
+    }
+
+    fn extras_report(&self) -> [ReadingReport; 6] {
+        let (snapshot, now, window) = (&self.snapshot, self.clock.now(), self.layout.interval.saturating_mul(3));
+        let number = |reading, sample: Option<Sample>| {
+            let value = sample.filter(|s| now.duration_since(s.at) <= window).map(|s| s.value);
+            extra(reading, value.map(|value| format!("{value:.1}")))
+        };
+        let sticks = snapshot
+            .memory_sticks
+            .as_ref()
+            .filter(|s| now.duration_since(s.at) <= window && !s.celsius.is_empty())
+            .map(|s| {
+                s.celsius
+                    .iter()
+                    .map(|c| format!("{c:.1}"))
+                    .collect::<Vec<_>>()
+                    .join("/")
+            });
+        [
+            number("Worst frame (ms)", snapshot.worst_frame_ms),
+            number("GPU fan (rpm)", snapshot.gpu_fan_rpm),
+            number("GPU VRAM clock (MHz)", snapshot.gpu_memory_mhz),
+            number("GPU video load", snapshot.gpu_video_load),
+            number("Memory used (GB)", snapshot.memory_used_gb),
+            extra("Memory sticks (°C)", sticks),
+        ]
     }
 
     pub fn interval(&self) -> Duration {
@@ -123,34 +257,66 @@ fn layout_for(settings: &Settings) -> Layout {
 }
 
 /// `Unavailable` clears the reading; a failed or non-finite read keeps the previous sample until it is stale.
-fn update(slot: &mut Option<Sample>, reading: &str, sensor: &mut dyn Sensor, now: Timestamp) -> Outcome {
+fn update(
+    slot: &mut Option<Sample>,
+    said: &mut Outcome,
+    reading: &str,
+    sensor: &mut dyn Sensor,
+    now: Timestamp,
+) -> ReadEffect {
     match sensor.read() {
         Ok(value) if value.is_finite() => {
+            *said = Outcome::Value(value);
             *slot = Some(Sample { value, at: now });
-            Outcome::Fresh
+            ReadEffect::Fresh
         }
         Ok(value) => {
+            *said = Outcome::Failed(String::from("the reading was not a finite number"));
             tracing::debug!(?value, reading, "non-finite reading, keeping the previous sample");
-            Outcome::Kept
+            ReadEffect::Kept
         }
-        Err(ReadError::Unavailable(_)) => {
+        Err(ReadError::Unavailable(reason)) => {
+            *said = Outcome::Unavailable(reason);
             *slot = None;
-            Outcome::Cleared
+            ReadEffect::Cleared
         }
         Err(e @ ReadError::Failed(_)) => {
+            *said = Outcome::Failed(failure_text(&e));
             tracing::debug!(error = ?e, reading, "read failed, keeping the previous sample");
-            Outcome::Kept
+            ReadEffect::Kept
         }
     }
 }
 
+/// The error and each cause under it on one line, which is how a report reads best.
+fn failure_text(error: &ReadError) -> String {
+    let mut texts = Vec::new();
+    let mut cause = error.source();
+    while let Some(next) = cause {
+        texts.push(next.to_string());
+        cause = next.source();
+    }
+    if texts.is_empty() {
+        texts.push(error.to_string());
+    }
+    texts.join(": ")
+}
+
 /// The extras to apply after a read: the sensor's own after an `Ok`, none at all after `Unavailable`, and `None`
 /// (keep what is there until stale) after a failure.
-fn extras_after(outcome: Outcome, sensor: &dyn Sensor) -> Option<Extras> {
+fn extras_after(outcome: ReadEffect, sensor: &dyn Sensor) -> Option<Extras> {
     match outcome {
-        Outcome::Fresh => Some(sensor.extras()),
-        Outcome::Cleared => Some(Extras::default()),
-        Outcome::Kept => None,
+        ReadEffect::Fresh => Some(sensor.extras()),
+        ReadEffect::Cleared => Some(Extras::default()),
+        ReadEffect::Kept => None,
+    }
+}
+
+fn extra(reading: &'static str, text: Option<String>) -> ReadingReport {
+    ReadingReport {
+        reading,
+        outcome: text.unwrap_or_else(|| String::from("not reported")),
+        details: None,
     }
 }
 

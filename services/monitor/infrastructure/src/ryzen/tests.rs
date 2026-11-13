@@ -52,3 +52,9 @@ fn zen_1_and_zen_plus_models_subtract_their_offset() {
     assert!(offset(0x19, "AMD Ryzen 7 7800X3D 8-Core Processor").abs() < 1e-9);
     assert!(offset(0x19, "AMD Ryzen 7 1800X Eight-Core Processor").abs() < 1e-9);
 }
+
+#[test]
+fn the_details_name_the_module_and_the_offset() {
+    assert_eq!(super::details(0.0), "AMDFamily17.bin; Tctl offset 0 °C");
+    assert_eq!(super::details(20.0), "AMDFamily17.bin; Tctl offset 20 °C");
+}

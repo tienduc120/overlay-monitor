@@ -202,3 +202,30 @@ fn each_status_says_what_to_do_about_it() {
         "did not answer: x"
     );
 }
+
+#[test]
+fn an_unopened_sensor_says_why_in_its_details() {
+    let mut sensor = reopening(
+        || PawnIoStatus::NotInstalled,
+        || -> Result<FakeSensor, ReadError> { panic!("no module may load") },
+    );
+    assert_eq!(sensor.details().as_deref(), Some("not opened: not read yet"));
+
+    sensor.read().unwrap_err();
+
+    assert_eq!(sensor.details().as_deref(), Some("not opened: not installed"));
+}
+
+#[test]
+fn an_open_sensor_passes_its_details_through() {
+    let mut sensor = reopening(
+        || PawnIoStatus::Installed {
+            version: "2.2.0".into(),
+        },
+        || Ok(FakeSensor::fixed(50.0).with_details("IntelMSR.bin; TjMax 100 °C")),
+    );
+
+    sensor.read().unwrap();
+
+    assert_eq!(sensor.details().as_deref(), Some("IntelMSR.bin; TjMax 100 °C"));
+}

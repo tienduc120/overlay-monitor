@@ -45,6 +45,14 @@ impl Sensor for RyzenTemperature {
         })?;
         Ok(tctl_celsius(narrow("ioctl_read_smn", raw)?) - self.offset)
     }
+
+    fn details(&self) -> Option<String> {
+        Some(details(self.offset))
+    }
+}
+
+fn details(offset: f64) -> String {
+    format!("{MODULE}; Tctl offset {offset} °C")
 }
 
 /// Bits 31:21 count eighths of a degree; with bit 19 set the range is shifted down by 49 degrees.

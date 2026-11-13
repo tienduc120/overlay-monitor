@@ -27,6 +27,7 @@ struct FakeBus {
     answers: HashMap<(u8, u64), u64>,
     down: AtomicBool,
     calls: AtomicUsize,
+    identity: Option<[u64; 3]>,
 }
 
 impl FakeBus {
@@ -35,7 +36,13 @@ impl FakeBus {
             answers: answers.iter().map(|&(a, r, v)| ((a, r), v)).collect(),
             down: AtomicBool::new(false),
             calls: AtomicUsize::new(0),
+            identity: None,
         }
+    }
+
+    fn identified(mut self, words: [u64; 3]) -> Self {
+        self.identity = Some(words);
+        self
     }
 
     fn hub(address: u8, temperature_raw: u64) -> [(u8, u64, u64); 3] {
@@ -57,6 +64,10 @@ impl SmbusRead for &FakeBus {
             .get(&(address, register))
             .copied()
             .ok_or_else(|| ReadError::Failed(Box::new(io::Error::other("no acknowledge"))))
+    }
+
+    fn identity(&self) -> Option<[u64; 3]> {
+        self.identity
     }
 }
 
@@ -180,10 +191,10 @@ fn modules() -> PathBuf {
 #[test]
 #[ignore = "needs PawnIO, DDR5 on an AMD board, and an elevated terminal"]
 fn the_hottest_ddr5_stick_reads_a_plausible_value() {
-    let t = Ddr5Temperature::open(&modules(), &CpuVendor::Amd)
-        .unwrap()
-        .read()
-        .unwrap();
+    let mut sensor = Ddr5Temperature::open(&modules(), &CpuVendor::Amd).unwrap();
+    let t = sensor.read().unwrap();
+    let details = sensor.details().unwrap();
+    assert!(details.starts_with("SmbusPIIX4.bin; "), "{details}");
     assert!((10.0..=95.0).contains(&t), "{t}");
 }
 
@@ -225,4 +236,30 @@ fn the_identity_reads_as_name_io_base_and_pci_ids() {
     let text = describe_identity([0x34_58_49_49_50, 0x0B00, 0x7E12_1462_790B_1022]);
 
     assert_eq!(text, "PIIX4 at I/O 0x0B00, PCI 1022:790B, subsystem 1462:7E12");
+}
+
+#[test]
+fn the_details_name_the_controller_and_each_hub_with_its_reading() {
+    let mut answers = FakeBus::hub(0x51, 0x0244).to_vec();
+    answers.extend(FakeBus::hub(0x53, 0x0214));
+    let bus = FakeBus::with(&answers).identified([0x34_58_49_49_50, 0x0B00, 0x7E12_1462_790B_1022]);
+    let mut reader = HubReader::new(&bus, r"Local\overlay-monitor-test-ddr5-the_details_name_the_controller");
+    assert_eq!(reader.details(), "not scanned yet");
+
+    reader.read().unwrap();
+
+    assert_eq!(
+        reader.details(),
+        "PIIX4 at I/O 0x0B00, PCI 1022:790B, subsystem 1462:7E12; SPD5118 hubs at 0x51 (36.2 °C), 0x53 (33.2 °C)"
+    );
+}
+
+#[test]
+fn the_details_say_when_no_hub_was_found() {
+    let bus = FakeBus::with(&[(0x50, 0x00, 0x00), (0x50, 0x01, 0x00)]);
+    let mut reader = HubReader::new(&bus, r"Local\overlay-monitor-test-ddr5-the_details_say_no_hub");
+
+    reader.read().unwrap_err();
+
+    assert_eq!(reader.details(), "no SPD5118 hub found");
 }

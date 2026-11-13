@@ -38,3 +38,9 @@ fn the_intel_package_temperature_reads_a_plausible_value() {
     let t = IntelTemperature::open(&modules()).unwrap().read().unwrap();
     assert!((15.0..=105.0).contains(&t), "{t}");
 }
+
+#[test]
+fn the_details_name_the_module_and_tjmax() {
+    assert_eq!(super::details(Some(0x0064_0000)), "IntelMSR.bin; TjMax 100 °C");
+    assert_eq!(super::details(None), "IntelMSR.bin; TjMax not read yet");
+}

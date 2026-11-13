@@ -12,8 +12,8 @@ use monitor_application::{
 };
 use monitor_infrastructure::{
     AdapterSensors, CpuLoad, Ddr5Temperature, FrameCounter, FrameRate, MemoryLoad, PRESENT_PROVIDERS, PawnIoProbe,
-    SchtasksStartup, TASK_NAME, TomlSettingsStore, UnavailableSensor, cpu_temperature, is_present, memory_kind,
-    memory_text, memory_types, reopening, settings_path,
+    SchtasksStartup, TASK_NAME, TomlSettingsStore, UnavailableSensor, WindowsSystemInfo, cpu_temperature, is_present,
+    memory_kind, memory_text, memory_types, reopening, settings_path,
 };
 use monitor_interfaces::{OverlayView, Ui, UiParts};
 use platform_clock::{Clock, SystemClock};
@@ -121,7 +121,10 @@ pub fn run() -> ExitCode {
         refresh_startup_task(&settings, &task);
     }
     let adapters = listed_adapters();
-    let gpu_names = adapters.iter().map(|adapter| adapter.name.clone()).collect();
+    let machine = Machine {
+        gpu_names: adapters.iter().map(|adapter| adapter.name.clone()).collect(),
+        system: WindowsSystemInfo::new(adapters.clone(), cpu_identity(), memory),
+    };
     let mut gpus = AdapterSensors::new(adapters);
     let gpu = gpus.open(settings.gpu.as_deref());
     let trace = start_frame_trace();
@@ -131,7 +134,7 @@ pub fn run() -> ExitCode {
         sensors.fps = unavailable(FPS_NEEDS_ADMIN);
     }
     let sampler = Sampler::new(sensors, Box::new(gpus), SystemClock, &settings);
-    match show_overlay(sampler, settings, store, gpu_names, trace, &counter) {
+    match show_overlay(sampler, settings, store, machine, trace, &counter) {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             tracing::error!(?error, "open the overlay");
@@ -235,13 +238,19 @@ fn settings_file() -> PathBuf {
     }
 }
 
+/// What the UI is told of this machine: the adapters the settings offer, and the source of the diagnostics.
+struct Machine {
+    gpu_names: Vec<String>,
+    system: WindowsSystemInfo,
+}
+
 /// Opens the overlay and the tray icon, runs the sampler and the frame counter beside the UI loop until it ends, then
 /// stops them in order.
 fn show_overlay(
     mut sampler: Sampler<SystemClock>,
     settings: Settings,
     store: Box<dyn SettingsStore>,
-    gpu_names: Vec<String>,
+    machine: Machine,
     trace: Option<(TraceSession, TraceConsumer)>,
     counter: &FrameCounter,
 ) -> Result<(), OpenError> {
@@ -266,9 +275,10 @@ fn show_overlay(
             sampler: control,
             settings,
             store,
-            gpu_names,
+            gpu_names: machine.gpu_names,
             startup: startup_task(),
             driver: Box::new(PawnIoProbe),
+            system: Box::new(machine.system),
         },
     );
     let waker = window.waker();
@@ -314,10 +324,27 @@ fn sample_until_stopped<C: Clock>(
             return;
         }
         wake();
+        if !wait_for_next_round(sampler, control) {
+            return;
+        }
+    }
+}
+
+/// Waits out the interval, or until settings arrive; `false` once the control sender is gone. A report is answered
+/// from the readings as they stand and does not end the wait: sampling again for it would query the hardware once more.
+fn wait_for_next_round<C: Clock>(sampler: &mut Sampler<C>, control: &Receiver<SamplerControl>) -> bool {
+    loop {
         match control.recv_timeout(sampler.interval()) {
-            Err(RecvTimeoutError::Timeout) => {}
-            Ok(SamplerControl::Apply(settings)) => sampler.apply(&settings),
-            Err(RecvTimeoutError::Disconnected) => return,
+            Err(RecvTimeoutError::Timeout) => return true,
+            Ok(SamplerControl::Apply(settings)) => {
+                sampler.apply(&settings);
+                return true;
+            }
+            Ok(SamplerControl::Report(reply)) => {
+                // The UI stopped waiting when its reply channel is gone, which is not worth a log line.
+                reply.send(sampler.report()).ok();
+            }
+            Err(RecvTimeoutError::Disconnected) => return false,
         }
     }
 }

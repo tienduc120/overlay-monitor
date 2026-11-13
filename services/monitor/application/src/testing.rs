@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 
 use crate::{
     DriverStatus, Extras, GpuPair, GpuSensors, LoadSettingsError, PawnIoStatus, ReadError, SaveSettingsError, Sensor,
-    Settings, SettingsStore, StartupTask, StartupTaskError,
+    Settings, SettingsStore, StartupTask, StartupTaskError, SystemFacts, SystemInfo,
 };
 
 /// Answers in order, then keeps repeating the last answer.
@@ -16,6 +16,7 @@ pub struct FakeSensor {
     queued: VecDeque<Result<f64, ReadError>>,
     last: Option<Result<f64, ReadError>>,
     extras: Extras,
+    details: Option<String>,
 }
 
 impl FakeSensor {
@@ -24,6 +25,7 @@ impl FakeSensor {
             queued: results.into(),
             last: None,
             extras: Extras::default(),
+            details: None,
         }
     }
 
@@ -35,6 +37,13 @@ impl FakeSensor {
     #[must_use]
     pub fn with_extras(mut self, extras: Extras) -> Self {
         self.extras = extras;
+        self
+    }
+
+    /// Answers this text as its details.
+    #[must_use]
+    pub fn with_details(mut self, details: &str) -> Self {
+        self.details = Some(details.to_owned());
         self
     }
 }
@@ -62,6 +71,10 @@ impl Sensor for FakeSensor {
 
     fn extras(&self) -> Extras {
         self.extras.clone()
+    }
+
+    fn details(&self) -> Option<String> {
+        self.details.clone()
     }
 }
 
@@ -203,6 +216,16 @@ pub struct FakeDriverStatus(pub PawnIoStatus);
 
 impl DriverStatus for FakeDriverStatus {
     fn pawnio(&self) -> PawnIoStatus {
+        self.0.clone()
+    }
+}
+
+/// A source of facts that always answers the ones it was given.
+#[derive(Clone, Debug)]
+pub struct FakeSystemInfo(pub SystemFacts);
+
+impl SystemInfo for FakeSystemInfo {
+    fn facts(&self) -> SystemFacts {
         self.0.clone()
     }
 }

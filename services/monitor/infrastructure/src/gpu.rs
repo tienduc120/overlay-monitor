@@ -67,8 +67,8 @@ impl GpuSensors for AdapterSensors {
         };
         tracing::info!(name = %adapter.name, "following this GPU");
         GpuPair {
-            load: or_unavailable(GpuLoad::open(adapter.luid)),
-            temp: Box::new(GpuTemperature::new(adapter.luid)),
+            load: or_unavailable(GpuLoad::open(adapter.luid, &adapter.name)),
+            temp: Box::new(GpuTemperature::new(adapter.luid, &adapter.name)),
         }
     }
 }
@@ -129,22 +129,28 @@ pub(crate) fn video_load_percent(samples: &[(String, f64)], luid: u64) -> Option
         .map(|busiest| busiest.min(100.0))
 }
 
+fn adapter_details(name: &str) -> String {
+    format!("adapter {name}")
+}
+
 /// Utilization of the followed adapter.
 #[derive(Debug)]
 pub struct GpuLoad {
     counters: CounterArray,
     luid: u64,
+    name: String,
     video: Option<f64>,
 }
 
 impl GpuLoad {
     /// # Errors
     /// `Failed` when the engine counters cannot be opened.
-    pub fn open(luid: u64) -> Result<Self, ReadError> {
+    pub fn open(luid: u64, name: &str) -> Result<Self, ReadError> {
         let counters = CounterArray::open(ENGINE_UTILIZATION).map_err(|e| failed(GpuError::OpenCounters(e)))?;
         Ok(Self {
             counters,
             luid,
+            name: name.to_owned(),
             video: None,
         })
     }
@@ -166,12 +172,17 @@ impl Sensor for GpuLoad {
             ..Extras::default()
         }
     }
+
+    fn details(&self) -> Option<String> {
+        Some(adapter_details(&self.name))
+    }
 }
 
 /// Temperature of the followed adapter in degrees Celsius.
 #[derive(Debug)]
 pub struct GpuTemperature {
     luid: u64,
+    name: String,
     fan_rpm: Option<f64>,
     memory_mhz: Option<f64>,
     seen_spinning: bool,
@@ -179,9 +190,10 @@ pub struct GpuTemperature {
 
 impl GpuTemperature {
     #[must_use]
-    pub fn new(luid: u64) -> Self {
+    pub fn new(luid: u64, name: &str) -> Self {
         Self {
             luid,
+            name: name.to_owned(),
             fan_rpm: None,
             memory_mhz: None,
             seen_spinning: false,
@@ -209,6 +221,10 @@ impl Sensor for GpuTemperature {
             gpu_memory_mhz: self.memory_mhz,
             ..Extras::default()
         }
+    }
+
+    fn details(&self) -> Option<String> {
+        Some(adapter_details(&self.name))
     }
 }
 

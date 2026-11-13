@@ -1,8 +1,10 @@
-use std::sync::mpsc::{TryRecvError, channel};
+use std::sync::mpsc::{RecvTimeoutError, TryRecvError, channel};
 use std::time::{Duration, Instant};
 
-use monitor_application::testing::{FakeDriverStatus, FakeStartupTask, MemoryStore};
-use monitor_application::{OverlayFrame, PawnIoStatus, SamplerControl, Settings, ShortcutKeys, overlay_style};
+use monitor_application::testing::{FakeDriverStatus, FakeStartupTask, FakeSystemInfo, MemoryStore};
+use monitor_application::{
+    OverlayFrame, PawnIoStatus, ReadingReport, SamplerControl, Settings, ShortcutKeys, SystemFacts, overlay_style,
+};
 use platform_win32::dialog::{Dialog, DialogChange};
 use platform_win32::hotkey::{Hotkey, HotkeyError};
 use platform_win32::icon::Icon;
@@ -13,8 +15,8 @@ use platform_win32::ui::{Flow, MessageWindow, UiEvent};
 use crate::{OverlayView, hotkey_keys};
 
 use super::{
-    Action, ErrorLog, LOCK_HOTKEY, SETTINGS, SHOW_HIDE_HOTKEY, Ui, UiParts, UiState, frames_stalled, menu_items,
-    restore_focus_after,
+    Action, COPY_DIAGNOSTICS, ErrorLog, LOCK_HOTKEY, SETTINGS, SHOW_HIDE_HOTKEY, Ui, UiParts, UiState, frames_stalled,
+    menu_items, readings_or_silence, restore_focus_after,
 };
 
 #[test]
@@ -73,6 +75,7 @@ fn the_menu_offers_settings() {
             (1, "Show overlay", true),
             (3, "Lock position", false),
             (4, "Settings\u{2026}", false),
+            (5, "Copy diagnostics", false),
             (2, "Exit", false)
         ]
     );
@@ -213,6 +216,7 @@ fn rig_on(window: MessageWindow, settings: Settings, store: MemoryStore) -> Rig 
             gpu_names: vec!["First GPU".to_owned(), "Second GPU".to_owned()],
             startup: Box::new(startup.clone()),
             driver: Box::new(FakeDriverStatus(PawnIoStatus::NotInstalled)),
+            system: Box::new(FakeSystemInfo(facts())),
         },
     );
     Rig {
@@ -389,6 +393,7 @@ fn the_menu_shows_both_checks() {
             (1, "Show overlay", true),
             (3, "Lock position", true),
             (4, "Settings\u{2026}", false),
+            (5, "Copy diagnostics", false),
             (2, "Exit", false)
         ]
     );
@@ -510,7 +515,10 @@ fn user_did(rig: &mut Rig, control: u16, change: DialogChange) {
 fn applied(rig: &Rig) -> Vec<Settings> {
     rig.controls
         .try_iter()
-        .map(|SamplerControl::Apply(settings)| settings)
+        .filter_map(|control| match control {
+            SamplerControl::Apply(settings) => Some(settings),
+            SamplerControl::Report(_) => None,
+        })
         .collect()
 }
 
@@ -806,4 +814,70 @@ fn a_failed_startup_task_keeps_the_window_open_with_the_reason() {
     );
     assert!(!dialog(&rig.ui).is_checked(303), "the box goes back to unticked");
     assert_eq!(rig.store.saved().len(), saves_before, "nothing was saved");
+}
+
+fn facts() -> SystemFacts {
+    SystemFacts {
+        app_version: String::from("0.1.0"),
+        windows: String::from("Windows 11 Pro"),
+        cpu: String::from("A CPU"),
+        memory: String::from("DDR5 x2"),
+        pawnio: PawnIoStatus::NotInstalled,
+        gpus: Vec::new(),
+    }
+}
+
+#[test]
+fn the_menu_command_copies_the_diagnostics() {
+    let mut state = UiState {
+        visible: true,
+        locked: false,
+    };
+
+    assert_eq!(state.on_command(COPY_DIAGNOSTICS), vec![Action::CopyDiagnostics]);
+}
+
+#[test]
+fn the_readings_the_sampler_sent_are_used() {
+    let sent = vec![ReadingReport {
+        reading: "FPS",
+        outcome: String::from("30.0"),
+        details: None,
+    }];
+
+    assert_eq!(readings_or_silence(Ok(sent.clone())), sent);
+}
+
+#[test]
+fn a_sampler_that_does_not_answer_becomes_one_reading() {
+    for silence in [RecvTimeoutError::Timeout, RecvTimeoutError::Disconnected] {
+        let readings = readings_or_silence(Err(silence));
+
+        assert_eq!(
+            readings,
+            vec![ReadingReport {
+                reading: "Sampler",
+                outcome: String::from("did not answer within 2 s"),
+                details: None,
+            }]
+        );
+    }
+}
+
+#[test]
+fn copying_the_diagnostics_asks_the_sampler_and_does_not_hang_on_silence() {
+    let Rig {
+        window,
+        mut ui,
+        controls,
+        ..
+    } = rig(Settings::default(), MemoryStore::empty());
+    // A sampler that already ended: nobody can answer, so the copy must carry on at once.
+    drop(controls);
+
+    let actions = ui.state.on_command(COPY_DIAGNOSTICS);
+    let started = Instant::now();
+    ui.apply(&window, actions);
+
+    assert!(started.elapsed() < Duration::from_secs(1));
 }

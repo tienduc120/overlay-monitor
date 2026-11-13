@@ -4,6 +4,7 @@
 #![expect(unsafe_code, reason = "this crate wraps Win32 calls in safe functions (ADR-0012)")]
 
 pub mod account;
+pub mod clipboard;
 pub mod cpu;
 pub mod dialog;
 pub mod dpi;
@@ -22,6 +23,7 @@ pub mod overlay;
 pub mod pawnio;
 pub mod pdh;
 pub mod placement;
+pub mod registry;
 pub mod shell;
 pub mod snap;
 #[cfg(feature = "test-support")]

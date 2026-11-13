@@ -28,6 +28,12 @@ pub trait Sensor: Send {
     fn extras(&self) -> Extras {
         Extras::default()
     }
+
+    /// What the diagnostics report says of where this reading comes from: the module, the adapter, the bus. Cached
+    /// from what the sensor already knows; asking never queries hardware.
+    fn details(&self) -> Option<String> {
+        None
+    }
 }
 
 /// The two sensors of one GPU adapter.
@@ -85,6 +91,10 @@ impl<S: Sensor + ?Sized> Sensor for Box<S> {
 
     fn extras(&self) -> Extras {
         (**self).extras()
+    }
+
+    fn details(&self) -> Option<String> {
+        (**self).details()
     }
 }
 
