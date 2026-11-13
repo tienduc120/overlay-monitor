@@ -18,7 +18,7 @@ use monitor_interfaces::{OverlayView, Ui, UiParts};
 use platform_clock::{Clock, SystemClock};
 use platform_win32::Win32Error;
 use platform_win32::dpi::{enable_per_monitor_awareness, small_icon_size};
-use platform_win32::etw::{TraceConsumer, TraceSession, start_session};
+use platform_win32::etw::{TraceConsumer, TraceSession, start_session, stop_session};
 use platform_win32::gpu::{GpuAdapter, gpu_adapters};
 use platform_win32::icon::Icon;
 use platform_win32::instance::SingleInstance;
@@ -44,7 +44,7 @@ enum OpenError {
     MessageWindow(#[source] Win32Error),
     #[error("create the overlay window")]
     OverlayWindow(#[source] Win32Error),
-    #[error("add the tray icon")]
+    #[error("make the tray icon image")]
     TrayIcon(#[source] Win32Error),
 }
 
@@ -177,7 +177,12 @@ fn show_overlay(
     let window = MessageWindow::create().map_err(OpenError::MessageWindow)?;
     let overlay = OverlayWindow::create(window.sink()).map_err(OpenError::OverlayWindow)?;
     let icon = tray_icon_image().map_err(OpenError::TrayIcon)?;
-    let tray = TrayIcon::add(&window, TOOLTIP, &icon).map_err(OpenError::TrayIcon)?;
+    let tray = TrayIcon::create(&window, TOOLTIP, &icon);
+    // A session that ends kills the process soon after, and the session would outlive it; the loop may be too late.
+    // A failure here cannot be reported, as the process is going.
+    window.on_session_end(|| {
+        stop_session(TRACE_SESSION).ok();
+    });
     let (frames, received) = mpsc::channel();
     let view = OverlayView::new(overlay);
     let (control, controls) = mpsc::channel();

@@ -374,6 +374,14 @@ fn stop(handle: CONTROLTRACE_HANDLE, name: Option<&HSTRING>) -> Result<(), Win32
     status.ok()
 }
 
+/// Stops the session `name`, which a crashed run may have left behind. A session that does not exist is fine.
+///
+/// # Errors
+/// The system refused to stop it: access denied for an account that is neither elevated nor in Performance Log Users.
+pub fn stop_session(name: &str) -> Result<(), Win32Error> {
+    stop(CONTROLTRACE_HANDLE::default(), Some(&HSTRING::from(name)))
+}
+
 /// `EVENT_TRACE_PROPERTIES` followed by the room the calls need for the names they write back.
 #[repr(C)]
 struct Properties {

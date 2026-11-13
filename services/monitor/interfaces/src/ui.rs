@@ -1,8 +1,11 @@
 //! What the tray icon and the menus do to the overlay: a pure state machine, and the glue that applies its actions.
 
 use std::sync::mpsc::{Receiver, Sender};
+use std::time::{Duration, Instant};
 
-use monitor_application::{OverlayFrame, OverlayStyle, SamplerControl, Settings, SettingsStore, overlay_style};
+use monitor_application::{
+    OverlayFrame, OverlayStyle, SamplerControl, Settings, SettingsStore, blank_frame, overlay_style,
+};
 use platform_win32::foreground::ForegroundWindow;
 use platform_win32::menu::{MenuItem, show_popup_menu};
 use platform_win32::tray::TrayIcon;
@@ -40,6 +43,8 @@ pub enum Action {
     /// Store whether the overlay is shown and locked in the settings, and save them.
     SaveSettings,
     ReaddTrayIcon,
+    /// Blank the overlay when the sampler has gone quiet.
+    CheckStalled,
     Exit,
 }
 
@@ -51,8 +56,10 @@ impl UiState {
             UiEvent::OverlayMoved => vec![Action::RememberPosition],
             UiEvent::Hotkey { id: LOCK_HOTKEY } => self.toggle_lock(),
             UiEvent::Wake if self.visible => vec![Action::DrawLatest],
-            UiEvent::Hotkey { .. } | UiEvent::Wake => Vec::new(),
+            UiEvent::Tick if self.visible => vec![Action::CheckStalled],
+            UiEvent::Hotkey { .. } | UiEvent::Wake | UiEvent::Tick => Vec::new(),
             UiEvent::TaskbarRestarted => vec![Action::ReaddTrayIcon],
+            UiEvent::SessionEnding => vec![Action::Exit],
         }
     }
 
@@ -109,6 +116,11 @@ pub fn restore_focus_after(_command: Option<u16>) -> bool {
     true
 }
 
+/// Whether more than three update intervals passed since the last frame, so the numbers on screen are old.
+pub(crate) fn frames_stalled(last_frame: Instant, now: Instant, interval: Duration) -> bool {
+    now.saturating_duration_since(last_frame) > interval.saturating_mul(3)
+}
+
 /// Remembers the last failure of one kind of operation, so a failure that repeats every frame is logged once.
 #[derive(Debug, Default)]
 struct ErrorLog {
@@ -152,6 +164,8 @@ pub struct Ui {
     style: OverlayStyle,
     /// The newest frame received, drawn again when the overlay is shown or the style changes.
     latest: Option<OverlayFrame>,
+    /// When a frame last arrived, for the stall check.
+    last_frame: Instant,
     draw_errors: ErrorLog,
     tray_errors: ErrorLog,
 }
@@ -197,11 +211,22 @@ impl Ui {
             settings,
             store,
             latest: None,
+            last_frame: Instant::now(),
             draw_errors: ErrorLog::default(),
             tray_errors: ErrorLog::default(),
         };
         if lock_dropped {
             ui.save_settings();
+        }
+        // The shell may not be ready at startup; the icon then comes with the taskbar.
+        if let Err(error) = ui.tray.readd() {
+            tracing::info!(?error, "the tray icon is not added yet; it comes with the taskbar");
+        }
+        if let Err(error) = window.set_tick(ui.settings.update_interval) {
+            tracing::warn!(
+                ?error,
+                "a stalled sampler will not blank the overlay, as the timer could not be set"
+            );
         }
         ui
     }
@@ -230,6 +255,7 @@ impl Ui {
             Action::HideOverlay => self.view.hide(),
             Action::DrawLatest => self.draw_latest(),
             Action::ReaddTrayIcon => self.readd_tray_icon(),
+            Action::CheckStalled => self.check_stalled(),
             Action::RememberPosition => self.remember_position(),
             Action::SaveSettings => self.save_settings(),
             Action::SetLocked(locked) => self.set_locked(locked),
@@ -295,6 +321,20 @@ impl Ui {
     fn take_frames(&mut self) {
         if let Some(newest) = self.frames.try_iter().last() {
             self.latest = Some(newest);
+            self.last_frame = Instant::now();
+        }
+    }
+
+    /// A sampler that stopped delivering must not leave old numbers looking current. The dashes stay as the latest
+    /// frame until a real one arrives, so a redraw (lock, show) keeps them.
+    fn check_stalled(&mut self) {
+        if !frames_stalled(self.last_frame, Instant::now(), self.settings.update_interval) {
+            return;
+        }
+        let blank = blank_frame(&self.settings);
+        if self.latest.as_ref() != Some(&blank) {
+            self.latest = Some(blank);
+            self.draw_latest();
         }
     }
 

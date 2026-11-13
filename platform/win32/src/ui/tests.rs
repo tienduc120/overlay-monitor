@@ -1,9 +1,12 @@
+use std::cell::Cell;
+use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
 use windows::Win32::UI::Shell::NIN_SELECT;
 use windows::Win32::UI::WindowsAndMessaging::{
-    IsWindow, PostMessageW, PostQuitMessage, SendMessageW, WM_APP, WM_CLOSE, WM_CONTEXTMENU, WM_LBUTTONUP, WM_MOUSEMOVE,
+    IsWindow, PostMessageW, PostQuitMessage, SendMessageW, WM_APP, WM_CLOSE, WM_CONTEXTMENU, WM_ENDSESSION,
+    WM_LBUTTONUP, WM_MOUSEMOVE, WM_QUERYENDSESSION,
 };
 
 use super::{
@@ -139,4 +142,56 @@ fn closing_the_message_window_ends_the_loop_instead_of_destroying_it() {
     // SAFETY: querying any handle is allowed.
     let alive = unsafe { IsWindow(Some(window.handle())) }.as_bool();
     assert!(alive, "the window must outlive a close request");
+}
+
+#[test]
+fn a_tick_reaches_the_loop() {
+    let window = MessageWindow::create().unwrap();
+    window.set_tick(Duration::from_millis(10)).unwrap();
+
+    let seen = loop_events(&window, |event| event == UiEvent::Tick);
+
+    assert_eq!(seen, [UiEvent::Tick]);
+}
+
+#[test]
+fn asking_to_end_the_session_is_agreed_to() {
+    let window = MessageWindow::create().unwrap();
+
+    // SAFETY: the window is alive on this thread; the message carries no data.
+    let answer = unsafe { SendMessageW(window.handle(), WM_QUERYENDSESSION, None, None) };
+
+    assert_eq!(answer.0, 1);
+}
+
+#[test]
+fn an_ending_session_runs_the_hook_once_and_ends_the_loop() {
+    let window = MessageWindow::create().unwrap();
+    let runs = Rc::new(Cell::new(0));
+    let counted = Rc::clone(&runs);
+    window.on_session_end(move || counted.set(counted.get() + 1));
+
+    // SAFETY: the window is alive on this thread; a non-zero wparam says the session is ending.
+    unsafe { SendMessageW(window.handle(), WM_ENDSESSION, Some(WPARAM(1)), None) };
+    let seen = loop_events(&window, |event| event == UiEvent::SessionEnding);
+
+    assert_eq!(seen, [UiEvent::SessionEnding]);
+    assert_eq!(runs.get(), 1);
+}
+
+#[test]
+fn a_cancelled_session_end_does_nothing() {
+    let window = MessageWindow::create().unwrap();
+    let runs = Rc::new(Cell::new(0));
+    let counted = Rc::clone(&runs);
+    window.on_session_end(move || counted.set(counted.get() + 1));
+
+    // SAFETY: the window is alive on this thread; a zero wparam says the end was cancelled.
+    unsafe { SendMessageW(window.handle(), WM_ENDSESSION, Some(WPARAM(0)), None) };
+    // SAFETY: posts WM_QUIT to this thread's queue, so the loop returns instead of waiting.
+    unsafe { PostQuitMessage(0) };
+    let seen = loop_events(&window, |_| false);
+
+    assert!(seen.is_empty(), "no event was due: {seen:?}");
+    assert_eq!(runs.get(), 0);
 }

@@ -14,8 +14,9 @@ use windows::Win32::UI::Shell::NIN_SELECT;
 use windows::Win32::UI::WindowsAndMessaging::{
     ChangeWindowMessageFilterEx, CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GWLP_USERDATA,
     GetMessageW, GetWindowLongPtrW, MSG, MSGFLT_ALLOW, MsgWaitForMultipleObjects, PM_REMOVE, PeekMessageW,
-    PostMessageW, PostQuitMessage, QS_ALLINPUT, RegisterClassExW, RegisterWindowMessageW, SetWindowLongPtrW,
-    TranslateMessage, WM_APP, WM_CLOSE, WM_CONTEXTMENU, WM_HOTKEY, WNDCLASSEXW, WS_EX_TOOLWINDOW, WS_OVERLAPPED,
+    PostMessageW, PostQuitMessage, QS_ALLINPUT, RegisterClassExW, RegisterWindowMessageW, SetTimer, SetWindowLongPtrW,
+    TranslateMessage, WM_APP, WM_CLOSE, WM_CONTEXTMENU, WM_ENDSESSION, WM_HOTKEY, WM_NULL, WM_QUERYENDSESSION,
+    WM_TIMER, WNDCLASSEXW, WS_EX_TOOLWINDOW, WS_OVERLAPPED,
 };
 use windows::core::{PCWSTR, w};
 
@@ -29,6 +30,8 @@ const WAKE: u32 = WM_APP + 1;
 const SELECT_BY_KEY: u32 = NIN_SELECT | 0x1;
 /// What the tray icon's callbacks arrive as.
 pub(crate) const TRAY_CALLBACK: u32 = WM_APP + 2;
+/// The timer behind [`UiEvent::Tick`]; the window has no other.
+const TICK_TIMER: usize = 1;
 
 /// What the user did, for the UI thread's loop to act on.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -47,6 +50,10 @@ pub enum UiEvent {
     Wake,
     /// Explorer restarted, so the tray icon is gone and must be added again.
     TaskbarRestarted,
+    /// The tick timer fired, which `MessageWindow::set_tick` set.
+    Tick,
+    /// Windows is signing out or shutting down, and this process is about to be ended.
+    SessionEnding,
 }
 
 /// What the loop's handler asks of it after an event.
@@ -69,6 +76,8 @@ struct Queue {
     events: RefCell<VecDeque<UiEvent>>,
     /// The id Explorer broadcasts when its taskbar is created again.
     taskbar_created: u32,
+    /// Runs once when the session ends, before the process may be killed.
+    session_end: RefCell<Option<Box<dyn Fn()>>>,
 }
 
 impl Queue {
@@ -123,6 +132,7 @@ impl MessageWindow {
         let queue = Rc::new(Queue {
             events: RefCell::new(VecDeque::new()),
             taskbar_created: taskbar_created_message(),
+            session_end: RefCell::new(None),
         });
         // SAFETY: the window is ours. The pointer stays valid while the window exists: `Drop` destroys the window
         // before `queue` is freed. Until it is stored, the procedure finds 0 and leaves the state alone.
@@ -140,6 +150,27 @@ impl MessageWindow {
     pub fn sink(&self) -> EventSink {
         let queue = Rc::clone(&self.queue);
         EventSink::new(move |event| queue.push(event))
+    }
+
+    /// Sets how often [`UiEvent::Tick`] arrives, replacing an earlier period.
+    ///
+    /// # Errors
+    /// The timer could not be set.
+    pub fn set_tick(&self, period: Duration) -> Result<(), Win32Error> {
+        let millis = u32::try_from(period.as_millis()).unwrap_or(u32::MAX).max(1);
+        // SAFETY: the window is ours; no callback is given, so the timer posts WM_TIMER to its procedure. The same id
+        // replaces the earlier timer.
+        if unsafe { SetTimer(Some(self.window), TICK_TIMER, millis, None) } == 0 {
+            Err(Win32Error::from_thread())
+        } else {
+            Ok(())
+        }
+    }
+
+    /// Runs `hook` once, in the window procedure, when Windows ends the session. The process may be killed right
+    /// after, so it is the place for what must not wait for the loop. It replaces an earlier hook.
+    pub fn on_session_end(&self, hook: impl Fn() + 'static) {
+        *self.queue.session_end.borrow_mut() = Some(Box::new(hook));
     }
 
     pub fn waker(&self) -> Waker {
@@ -267,9 +298,18 @@ unsafe extern "system" fn window_procedure(window: HWND, message: u32, wparam: W
     // SAFETY: non-zero data is the `Rc<Queue>` pointer `create` stored, which `MessageWindow` keeps alive until it has
     // destroyed the window; only shared references are ever made from it.
     if let Some(queue) = unsafe { state.as_ref() } {
+        if message == WM_QUERYENDSESSION {
+            // Never blocks the sign-out; the app is cheap to end.
+            return LRESULT(1);
+        }
+        if message == WM_ENDSESSION && wparam.0 != 0 {
+            end_session(window, queue);
+            return LRESULT(0);
+        }
         let event = match message {
             TRAY_CALLBACK => tray_event(wparam, lparam),
             WAKE => Some(UiEvent::Wake),
+            WM_TIMER if wparam.0 == TICK_TIMER => Some(UiEvent::Tick),
             WM_HOTKEY => Some(UiEvent::Hotkey {
                 id: i32::try_from(wparam.0).unwrap_or(0),
             }),
@@ -283,6 +323,17 @@ unsafe extern "system" fn window_procedure(window: HWND, message: u32, wparam: W
     }
     // SAFETY: the arguments are the ones Windows passed.
     unsafe { DefWindowProcW(window, message, wparam, lparam) }
+}
+
+/// Runs the session-end hook, if it has not run, and wakes the loop so it sees the event before the process is ended.
+fn end_session(window: HWND, queue: &Queue) {
+    let hook = queue.session_end.borrow_mut().take();
+    if let Some(hook) = hook {
+        hook();
+    }
+    queue.push(UiEvent::SessionEnding);
+    // SAFETY: the window is ours; the message carries no data and only wakes the loop.
+    unsafe { PostMessageW(Some(window), WM_NULL, WPARAM(0), LPARAM(0)) }.ok();
 }
 
 /// Where a window reports what the user did to it.

@@ -2,7 +2,7 @@ use std::mem::offset_of;
 
 use windows::Win32::System::Diagnostics::Etw::EVENT_FILTER_EVENT_ID;
 
-use super::{EventIdFilter, TraceConsumer, TraceSession, start_session, ticks_to_ns};
+use super::{EventIdFilter, TraceConsumer, TraceSession, start_session, stop_session, ticks_to_ns};
 
 fn shared_across_threads<T: Send + Sync>() {}
 fn moved_across_threads<T: Send>() {}
@@ -66,4 +66,12 @@ fn ticks_convert_to_nanoseconds() {
     );
     assert_eq!(ticks_to_ns(-1, 10_000_000), 0, "a negative time is no time");
     assert_eq!(ticks_to_ns(5, 0), 0, "no frequency is no time");
+}
+
+#[test]
+#[ignore = "needs an elevated terminal"]
+fn stopping_a_session_that_does_not_exist_is_fine() {
+    let stopped = stop_session("OverlayMonitorTestNoSuchSession");
+
+    assert!(stopped.is_ok(), "{stopped:?}");
 }

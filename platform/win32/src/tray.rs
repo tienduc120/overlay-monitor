@@ -26,21 +26,18 @@ pub struct TrayIcon {
 }
 
 impl TrayIcon {
-    /// Adds the icon showing `icon`, which must outlive the tray icon: `readd` needs the handle again.
-    ///
-    /// # Errors
-    /// The shell refused the icon.
-    pub fn add(window: &MessageWindow, tooltip: &str, icon: &Icon) -> Result<Self, Win32Error> {
-        let tray = Self {
+    /// Makes the icon without showing it: the shell may not be ready, so `readd` adds it, now or when the taskbar comes.
+    /// `icon` must outlive the tray icon, as `readd` needs the handle.
+    #[must_use]
+    pub fn create(window: &MessageWindow, tooltip: &str, icon: &Icon) -> Self {
+        Self {
             window: window.handle(),
             tooltip: tooltip.to_owned(),
             icon: icon.handle(),
-        };
-        tray.register()?;
-        Ok(tray)
+        }
     }
 
-    /// Adds the icon again, after Explorer restarted and dropped it.
+    /// Adds the icon, the first time or after Explorer restarted and dropped it.
     ///
     /// # Errors
     /// The shell refused the icon.

@@ -2,13 +2,13 @@ use std::error::Error;
 use std::fmt;
 use std::time::Duration;
 
-use jiff::SignedDuration;
+use jiff::{SignedDuration, Timestamp};
 use monitor_domain::{
-    Field as DomainField, LONGEST_INTERVAL, Layout, LineConfig, LineKind, MemoryKind, Modifiers, Rgb, Shortcut, Style,
-    clamp_interval, shortcut_text,
+    Field as DomainField, LONGEST_INTERVAL, Layout, LineConfig, LineKind, MemoryKind, Modifiers, Rgb, Shortcut,
+    Snapshot, Style, clamp_interval, shortcut_text,
 };
 
-use crate::{OverlayStyle, SettingsStore};
+use crate::{OverlayFrame, OverlayStyle, SettingsStore};
 
 /// Which line of the overlay a setting is about.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -394,6 +394,14 @@ pub(crate) fn layout_of(settings: &Settings) -> Layout {
             })
             .collect(),
         interval: signed(settings.update_interval),
+    }
+}
+
+/// The frame with every enabled line's values as `—`, for an overlay whose sampler has gone quiet.
+pub fn blank_frame(settings: &Settings) -> OverlayFrame {
+    // An empty snapshot has no samples, so the time the lines are rendered at decides nothing.
+    OverlayFrame {
+        lines: layout_of(settings).render(&Snapshot::default(), Timestamp::UNIX_EPOCH),
     }
 }
 

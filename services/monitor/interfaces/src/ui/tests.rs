@@ -1,4 +1,5 @@
 use std::sync::mpsc::{TryRecvError, channel};
+use std::time::{Duration, Instant};
 
 use monitor_application::testing::MemoryStore;
 use monitor_application::{OverlayFrame, SamplerControl, Settings, ShortcutKeys};
@@ -10,7 +11,10 @@ use platform_win32::ui::{Flow, MessageWindow, UiEvent};
 
 use crate::{OverlayView, hotkey_keys};
 
-use super::{Action, ErrorLog, LOCK_HOTKEY, SHOW_HIDE_HOTKEY, Ui, UiParts, UiState, menu_items, restore_focus_after};
+use super::{
+    Action, ErrorLog, LOCK_HOTKEY, SHOW_HIDE_HOTKEY, Ui, UiParts, UiState, frames_stalled, menu_items,
+    restore_focus_after,
+};
 
 #[test]
 fn a_tray_click_toggles_and_saves() {
@@ -173,7 +177,7 @@ fn rig(settings: Settings, store: MemoryStore) -> Rig {
 fn rig_on(window: MessageWindow, settings: Settings, store: MemoryStore) -> Rig {
     let overlay = OverlayWindow::create(window.sink()).unwrap();
     let image = Icon::stock().unwrap();
-    let tray = TrayIcon::add(&window, "Overlay Monitor test", &image).unwrap();
+    let tray = TrayIcon::create(&window, "Overlay Monitor test", &image);
     let (frames, received) = channel();
     let (sampler, controls) = channel();
     let ui = Ui::new(
@@ -391,4 +395,42 @@ fn a_locked_overlay_starts_unlocked_when_its_shortcut_is_taken() {
 
     assert!(!ui.state.locked, "the overlay must be grabbable");
     assert_eq!(store.saved().last().map(|settings| settings.locked), Some(false));
+}
+
+#[test]
+fn three_missed_intervals_count_as_stalled() {
+    let last = Instant::now();
+    let interval = Duration::from_secs(1);
+
+    assert!(!frames_stalled(last, last + interval * 3, interval));
+    assert!(frames_stalled(
+        last,
+        last + interval * 3 + Duration::from_millis(1),
+        interval
+    ));
+}
+
+#[test]
+fn a_tick_checks_only_while_visible() {
+    let mut shown = UiState {
+        visible: true,
+        locked: false,
+    };
+    let mut hidden = UiState {
+        visible: false,
+        locked: false,
+    };
+
+    assert_eq!(shown.on_event(UiEvent::Tick), vec![Action::CheckStalled]);
+    assert_eq!(hidden.on_event(UiEvent::Tick), Vec::<Action>::new());
+}
+
+#[test]
+fn an_ending_session_exits() {
+    let mut s = UiState {
+        visible: false,
+        locked: false,
+    };
+
+    assert_eq!(s.on_event(UiEvent::SessionEnding), vec![Action::Exit]);
 }

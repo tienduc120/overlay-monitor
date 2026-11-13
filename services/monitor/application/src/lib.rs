@@ -12,6 +12,6 @@ pub use ports::{Extras, GpuPair, GpuSensors, ReadError, Sensor, Sensors, Setting
 pub use sample::{OverlayFrame, Sampler, SamplerControl};
 pub use settings::{
     Field, InvalidShortcut, Line, LineSettings, LoadSettingsError, OverlayPosition, SaveSettingsError, Settings,
-    ShortcutKeys, StyleSettings, line_fields, load_settings, overlay_style,
+    ShortcutKeys, StyleSettings, blank_frame, line_fields, load_settings, overlay_style,
 };
 pub use style::{OverlayStyle, default_style};

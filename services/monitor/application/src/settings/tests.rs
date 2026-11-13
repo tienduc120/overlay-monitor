@@ -3,7 +3,8 @@ use std::time::Duration;
 use monitor_domain::MemoryKind;
 
 use super::{
-    Field, Line, LineSettings, Settings, ShortcutKeys, StyleSettings, layout_of, load_settings, overlay_style,
+    Field, Line, LineSettings, Settings, ShortcutKeys, StyleSettings, blank_frame, layout_of, load_settings,
+    overlay_style,
 };
 use crate::testing::MemoryStore;
 
@@ -209,4 +210,19 @@ fn the_store_fake_records_every_save() {
     store.save(&Settings::default()).unwrap();
     assert_eq!(handle.saved().len(), 1);
     assert!(MemoryStore::failing_saves().save(&Settings::default()).is_err());
+}
+
+#[test]
+fn a_blank_frame_shows_every_enabled_line_with_dashes() {
+    let frame = blank_frame(&Settings::defaults(MemoryKind::Ddr5));
+
+    assert_eq!(
+        frame.lines,
+        [
+            "FPS:     — FPS",
+            "CPU:     — %,    — °C",
+            "GPU:     — %,    — °C",
+            "DDR5:    — %,    — °C"
+        ]
+    );
 }
