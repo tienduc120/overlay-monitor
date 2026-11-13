@@ -11,9 +11,9 @@ Read [AGENTS.md](AGENTS.md) first, then [docs/adr/](docs/adr/README.md).
 Overlay Monitor runs on Windows 10 1809 or later, x64.
 
 - The CPU and DDR5 temperatures need the PawnIO driver installed ([pawnio.eu](https://pawnio.eu), version 2.1.0 or later) and the app running as administrator.
-- DDR5 temperature on Intel boards goes through the `SmbusI801` module but is untested for the same reason; AMD boards use `SmbusPIIX4`.
-- The memory line reads "RAM" when the SMBIOS table lists no DDR5 module, so a DDR4 machine is labelled correctly even without PawnIO.
 - Intel CPUs are supported through the `IntelMSR` module but untested: the maker has no Intel machine.
+- DDR5 temperature on Intel boards goes through the `SmbusI801` module but is untested for the same reason; AMD boards use `SmbusPIIX4`.
+- The memory line reads "RAM" when the SMBIOS table lists memory modules and none is DDR5, so a DDR4 machine is labelled correctly even without PawnIO. A table that lists no modules, or cannot be read, keeps "DDR5".
 - A PawnIO older than 2.1.0 counts as not installed (FACEIT blocked the older driver in 2025; 2.1.0 carries a new signature). Installing it while the app runs is picked up on the next update.
 - FPS needs administrator or membership in the "Performance Log Users" group.
 - GPU load and temperature and CPU and memory load need neither.
@@ -51,18 +51,17 @@ Each line shows the values the settings turn on, in this order. A missing or sta
 
 ## Settings
 
-**Settings…** in the tray or overlay menu opens a window with three groups.
-Changes show on the overlay at once, **OK** saves them, and **Cancel** or Esc puts everything back.
-- General: the two shortcuts, start with Windows, and the state of PawnIO with an **Install…** button that opens its page when the driver is missing or too old.
+**Settings…** in the tray or overlay menu opens a window with three groups. Style and Readings changes show on the overlay at once; the shortcuts and Start with Windows take effect on **OK**. **OK** saves everything, and **Cancel** or Esc puts everything back.
+
 - Style: the font, its size, bold and italic, the text, outline, and background colours, the outline width, and the background opacity.
 - Readings: for each line, whether it shows, its label, and which of its values show (the table above), plus the GPU adapter and how often the overlay updates.
+- General: the two shortcuts, start with Windows, and the state of PawnIO with an **Install…** button that opens its page when the driver is missing or too old.
 
 The app keeps its settings in `%APPDATA%\OverlayMonitor\settings.toml`, created on the first change. The app rewrites the file when a setting changes, so edit it while the app is closed. Every key is optional; a file that cannot be read is kept as `settings.toml.bad` and the defaults are used. The keys and the rules are in [ADR-0018](docs/adr/0018-the-settings-file.md).
 
 ## Diagnostics
 
-Choose **Copy diagnostics** from the tray or overlay menu and the app puts a plain-text report on the clipboard: the app and Windows versions, the CPU, the memory type, the state of PawnIO, each graphics adapter and whether its temperature can be read, and every reading with its value or the error that stopped it (extra values included, shown or not), each with the module, bus, or adapter it came from.
-Paste it into a message or an issue, so a friend can see why a reading shows a dash.
+Choose **Copy diagnostics** from the tray or overlay menu and the app puts a plain-text report on the clipboard: the app and Windows versions, the CPU, the memory type, the state of PawnIO, each graphics adapter and whether its temperature can be read, and every reading with its value or the error that stopped it (extra values included, shown or not), each with the module, bus, or adapter it came from. Paste it into a message or an issue, so a friend can see why a reading shows a dash.
 
 The app also keeps a log in `%LOCALAPPDATA%\OverlayMonitor\logs\overlay-monitor.log`, with sensor outcomes as they change and any start-up failure; at 1 MiB it moves to `overlay-monitor.1.log` and keeps three old files (`.1` to `.3`).
 
