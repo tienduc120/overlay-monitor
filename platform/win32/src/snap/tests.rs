@@ -1,4 +1,4 @@
-use super::{Edges, Rect, keep_snapped, snap_while_moving};
+use super::{Edges, Rect, keep_snapped, snap_while_moving, touching};
 
 const MONITOR: Rect = Rect {
     left: 0,
@@ -128,6 +128,26 @@ fn a_window_flush_left_keeps_its_left_when_it_grows() {
     let placed = keep_snapped((260, 100), current, MONITOR, edges);
 
     assert_eq!((placed.left, placed.right), (0, 260));
+}
+
+#[test]
+fn a_window_lying_on_the_right_and_bottom_edges_is_flush_with_them() {
+    let corner = Rect {
+        left: 2360,
+        top: 1340,
+        right: 2560,
+        bottom: 1440,
+    };
+
+    assert_eq!(
+        touching(corner, MONITOR),
+        Edges {
+            right: true,
+            bottom: true,
+            ..Edges::default()
+        }
+    );
+    assert_eq!(touching(window(500, 500), MONITOR), Edges::default());
 }
 
 #[test]

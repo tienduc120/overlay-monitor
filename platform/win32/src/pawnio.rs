@@ -154,13 +154,9 @@ impl std::fmt::Display for PawnVersion {
 
 /// Splits the driver's version word, `(major << 16) | (minor << 8) | patch`.
 #[must_use]
-#[expect(clippy::cast_possible_truncation, reason = "each field is one byte of the word")]
 pub const fn decode_version(raw: u32) -> PawnVersion {
-    PawnVersion {
-        major: (raw >> 16) as u8,
-        minor: (raw >> 8) as u8,
-        patch: raw as u8,
-    }
+    let [patch, minor, major, _] = raw.to_le_bytes();
+    PawnVersion { major, minor, patch }
 }
 
 /// Asks the driver for its version; this reads nothing from hardware.

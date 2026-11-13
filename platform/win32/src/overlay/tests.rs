@@ -367,6 +367,30 @@ fn a_saved_placement_moves_the_window_back_to_it() {
 }
 
 #[test]
+fn a_window_restored_flush_right_stays_flush_when_it_narrows() {
+    let mut window = OverlayWindow::create(EventSink::discard()).unwrap();
+    let wide = lines(&["FPS:   30 FPS", "CPU:   2.0 %, 45.8 °C"]);
+    window.draw(&wide, &style()).unwrap();
+    window.move_to(None);
+    let home = window.placement().unwrap();
+    let monitor = primary_monitor_bounds();
+    let width = size(window_rect(&window)).0;
+    let flush_right = MonitorPlacement {
+        x: monitor.right - monitor.left - width,
+        y: home.y,
+        monitor: home.monitor,
+    };
+    window.move_to(Some(&flush_right));
+    window.draw(&wide, &style()).unwrap();
+
+    window.draw(&lines(&["FPS:   30 FPS"]), &style()).unwrap();
+
+    let narrowed = window_rect(&window);
+    assert!(size(narrowed).0 < width, "the test needs a narrower window");
+    assert_eq!(narrowed.right, monitor.right, "a gap must not open on the right");
+}
+
+#[test]
 fn a_finished_drag_is_reported() {
     let (sink, events) = recording_sink();
     let window = OverlayWindow::create(sink).unwrap();

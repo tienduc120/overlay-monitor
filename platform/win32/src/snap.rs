@@ -59,6 +59,16 @@ fn snap_axis(span: (i32, i32), monitor: (i32, i32), distance: i32) -> (i32, i32,
     }
 }
 
+/// The edges of `monitor` that `window` lies on.
+pub fn touching(window: Rect, monitor: Rect) -> Edges {
+    Edges {
+        left: window.left == monitor.left,
+        top: window.top == monitor.top,
+        right: window.right == monitor.right,
+        bottom: window.bottom == monitor.bottom,
+    }
+}
+
 /// Places a window of the new `size` so it stays flush with each marked edge (a right or bottom edge keeps its
 /// coordinate, so the window grows leftward or upward), then clamps it inside `monitor`.
 pub fn keep_snapped(size: (i32, i32), current: Rect, monitor: Rect, edges: Edges) -> Rect {

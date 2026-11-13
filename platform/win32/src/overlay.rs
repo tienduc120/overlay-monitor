@@ -40,7 +40,7 @@ use windows::core::{PCWSTR, w};
 use crate::Win32Error;
 use crate::dpi::{dips_from_points, pixels_from_dips};
 use crate::placement::{MonitorPlacement, monitors, named_monitor, resolve_origin};
-use crate::snap::{Edges, Rect, keep_snapped, snap_while_moving};
+use crate::snap::{Edges, Rect, keep_snapped, snap_while_moving, touching};
 use crate::text::{TextPainter, TextStyle};
 use crate::ui::{EventSink, UiEvent};
 
@@ -72,8 +72,9 @@ struct Canvas {
     surface: Option<Surface>,
     /// What was drawn last, to draw again at a new DPI.
     last: Option<(Vec<String>, TextStyle)>,
-    /// The monitor edges the window is flush with, which a resize keeps it flush with.
-    edges: Edges,
+    /// The monitor edges the window is flush with, which a resize keeps it flush with. `None` after it was placed
+    /// rather than dragged: the next present marks the edges it then lies on, so a window saved flush stays flush.
+    edges: Option<Edges>,
 }
 
 impl OverlayWindow {
@@ -110,7 +111,7 @@ impl OverlayWindow {
             target,
             surface: None,
             last: None,
-            edges: Edges::default(),
+            edges: None,
         };
         let shared = Rc::new(Shared {
             sink,
@@ -215,9 +216,9 @@ impl OverlayWindow {
             )
         }
         .ok();
-        // A place that was chosen, not dragged, is flush with nothing in particular.
+        // A place that was chosen, not dragged: the next present finds the edges it lies on.
         if let Ok(mut canvas) = self.shared.canvas.try_borrow_mut() {
-            canvas.edges = Edges::default();
+            canvas.edges = None;
         }
     }
 
@@ -263,7 +264,7 @@ impl Canvas {
         // SAFETY: ends the draw begun above; no tags are wanted.
         let ended = unsafe { self.target.EndDraw(None, None) };
         painted.and(ended)?;
-        present(self.window, surface, self.edges)
+        present(self.window, surface, &mut self.edges)
     }
 
     /// Draws the last lines again at `dpi`, after the window moved to a monitor with another scale.
@@ -276,8 +277,13 @@ impl Canvas {
 }
 
 /// Makes `surface` the bitmap's content and size. The window stays flush with the monitor edges it was snapped to,
-/// inside its monitor, and goes back on top of windows that became topmost since, without being activated.
-fn present(window: HWND, surface: &Surface, edges: Edges) -> Result<(), Win32Error> {
+/// inside its monitor, and goes back on top of windows that became topmost since, without being activated. A window
+/// that was placed rather than dragged is marked flush with the edges it lies on from here.
+fn present(window: HWND, surface: &Surface, edges: &mut Option<Edges>) -> Result<(), Win32Error> {
+    let SIZE { cx, cy } = surface.size;
+    // Placed before the resize: it keeps the top-left, so a right or bottom edge read after it would already be lost.
+    let placed = snapped_place(window, (cx, cy), edges);
+    let destination = placed.map(|at| POINT { x: at.left, y: at.top });
     let source = POINT::default();
     let blend = per_pixel_alpha();
     // SAFETY: the window and the surface's DC are alive, and every pointer is to a live value.
@@ -285,7 +291,7 @@ fn present(window: HWND, surface: &Surface, edges: Edges) -> Result<(), Win32Err
         UpdateLayeredWindow(
             window,
             None,
-            None,
+            destination.as_ref().map(ptr::from_ref),
             Some(&raw const surface.size),
             Some(surface.dc),
             Some(&raw const source),
@@ -294,17 +300,6 @@ fn present(window: HWND, surface: &Surface, edges: Edges) -> Result<(), Win32Err
             ULW_ALPHA,
         )
     }?;
-    let SIZE { cx, cy } = surface.size;
-    let mut current = RECT::default();
-    // SAFETY: the window is alive and `current` is a live local.
-    let placed = unsafe { GetWindowRect(window, &raw mut current) }
-        .ok()
-        .and_then(|()| {
-            // SAFETY: a handle of a live window; the nearest monitor is always found.
-            let monitor = unsafe { MonitorFromWindow(window, MONITOR_DEFAULTTONEAREST) };
-            monitor_bounds(monitor)
-        })
-        .map(|bounds| keep_snapped((cx, cy), from_win32(current), bounds, edges));
     // SAFETY: the window is alive; it is not activated. Without a monitor to place it on it keeps its position.
     unsafe {
         match placed {
@@ -312,6 +307,19 @@ fn present(window: HWND, surface: &Surface, edges: Edges) -> Result<(), Win32Err
             None => SetWindowPos(window, Some(HWND_TOPMOST), 0, 0, cx, cy, SWP_NOACTIVATE | SWP_NOMOVE),
         }
     }
+}
+
+/// Where the window goes at its new `size`: flush with its edges and inside its monitor. A window placed rather than
+/// dragged gets the edges it then lies on. `None` when Windows cannot say where it is or on which monitor.
+fn snapped_place(window: HWND, size: (i32, i32), edges: &mut Option<Edges>) -> Option<Rect> {
+    let mut current = RECT::default();
+    // SAFETY: the window is alive and `current` is a live local.
+    unsafe { GetWindowRect(window, &raw mut current) }.ok()?;
+    // SAFETY: a handle of a live window; the nearest monitor is always found.
+    let bounds = monitor_bounds(unsafe { MonitorFromWindow(window, MONITOR_DEFAULTTONEAREST) })?;
+    let at = keep_snapped(size, from_win32(current), bounds, edges.unwrap_or_default());
+    edges.get_or_insert_with(|| touching(at, bounds));
+    Some(at)
 }
 
 /// Blends with each pixel's own alpha, which is premultiplied, at full strength.
@@ -636,7 +644,7 @@ fn on_moving(window: HWND, shared: Option<&Shared>, proposed: &mut RECT, cursor:
     };
     let (snapped, edges) = snap_while_moving(from_win32(*proposed), bounds, snap_distance(window_dpi(window)));
     *proposed = to_win32(snapped);
-    canvas.edges = edges;
+    canvas.edges = Some(edges);
     true
 }
 

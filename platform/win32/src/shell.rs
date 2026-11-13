@@ -10,20 +10,23 @@ use crate::Win32Error;
 /// `ShellExecuteW` answers a value above this when it worked, and an error code up to it when it did not.
 const LAST_ERROR_CODE: usize = 32;
 
-/// Opens `url` in the user's default browser.
+/// Opens `url` in the user's default browser, at the user's own level even from the elevated app.
+///
+/// The address goes to `explorer.exe`, which hands it to the desktop's running Explorer: a browser started straight
+/// from this process would run as administrator, which browsers warn about or refuse to hand to their open window.
 ///
 /// # Errors
-/// The shell refused: no program is set for the address, or it could not be started.
+/// The shell refused: `explorer.exe` could not be started.
 pub fn open_url(url: &str) -> Result<(), Win32Error> {
-    let wide: Vec<u16> = url.encode_utf16().chain(Some(0)).collect();
-    // SAFETY: the verb is a static string and `wide` is a null-terminated copy that outlives the call; no owner
-    // window, parameters, or directory are given.
+    let quoted: Vec<u16> = format!("\"{url}\"").encode_utf16().chain(Some(0)).collect();
+    // SAFETY: the verb and the file are static strings and `quoted` is a null-terminated copy that outlives the call;
+    // no owner window or directory is given.
     let result = unsafe {
         ShellExecuteW(
             None::<HWND>,
             w!("open"),
-            PCWSTR(wide.as_ptr()),
-            PCWSTR::null(),
+            w!("explorer.exe"),
+            PCWSTR(quoted.as_ptr()),
             PCWSTR::null(),
             SW_SHOWNORMAL,
         )
