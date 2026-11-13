@@ -28,5 +28,8 @@ monitor-application = { path = "../application", features = ["test-support"] }
 # Asks Windows for elevation at start, which the PawnIO temperatures need.
 elevated = []
 
+[build-dependencies]
+embed-resource = { workspace = true }
+
 [lints]
 workspace = true

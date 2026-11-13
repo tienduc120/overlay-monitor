@@ -37,6 +37,8 @@ toml = "1.2.1"
 toml_edit = "0.25.19"
 walkdir = "2.5.0"
 
+# Build scripts
+embed-resource = "3.0.12"
 
 [workspace.lints.rust]
 unsafe_code = "deny" # refused everywhere; only platform-win32 may expect it (ADR-0012, rule source-unsafe-scope)
