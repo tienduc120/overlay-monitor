@@ -38,6 +38,29 @@ impl Outcome {
     }
 }
 
+/// Whether `next` is worth a log line after `previous`: a change of kind or of text is, a new value after a value is
+/// not, and the first value is not.
+#[must_use]
+pub fn is_news(previous: &Outcome, next: &Outcome) -> bool {
+    match (previous, next) {
+        (Outcome::Value(_) | Outcome::NotYet, Outcome::Value(_)) => false,
+        _ => previous != next,
+    }
+}
+
+/// Keeps `next` as what the reading said, and logs it when it is news.
+fn remember(said: &mut Outcome, next: Outcome, reading: &str) {
+    if is_news(said, &next) {
+        match &next {
+            Outcome::Failed(error) => tracing::warn!(reading, error, "reading failed"),
+            Outcome::Unavailable(reason) => tracing::info!(reading, reason, "reading unavailable"),
+            Outcome::Value(_) => tracing::info!(reading, "reading recovered"),
+            Outcome::NotYet => {}
+        }
+    }
+    *said = next;
+}
+
 /// One reading as the diagnostics report lists it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ReadingReport {
@@ -266,22 +289,26 @@ fn update(
 ) -> ReadEffect {
     match sensor.read() {
         Ok(value) if value.is_finite() => {
-            *said = Outcome::Value(value);
+            remember(said, Outcome::Value(value), reading);
             *slot = Some(Sample { value, at: now });
             ReadEffect::Fresh
         }
         Ok(value) => {
-            *said = Outcome::Failed(String::from("the reading was not a finite number"));
+            remember(
+                said,
+                Outcome::Failed(String::from("the reading was not a finite number")),
+                reading,
+            );
             tracing::debug!(?value, reading, "non-finite reading, keeping the previous sample");
             ReadEffect::Kept
         }
         Err(ReadError::Unavailable(reason)) => {
-            *said = Outcome::Unavailable(reason);
+            remember(said, Outcome::Unavailable(reason), reading);
             *slot = None;
             ReadEffect::Cleared
         }
         Err(e @ ReadError::Failed(_)) => {
-            *said = Outcome::Failed(failure_text(&e));
+            remember(said, Outcome::Failed(failure_text(&e)), reading);
             tracing::debug!(error = ?e, reading, "read failed, keeping the previous sample");
             ReadEffect::Kept
         }

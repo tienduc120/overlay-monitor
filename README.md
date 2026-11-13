@@ -58,6 +58,8 @@ The app keeps its settings in `%APPDATA%\OverlayMonitor\settings.toml`, created 
 Choose **Copy diagnostics** from the tray or overlay menu and the app puts a plain-text report on the clipboard: the app and Windows versions, the CPU, the memory type, the state of PawnIO, each graphics adapter and whether its temperature can be read, and every reading with its value or the error that stopped it (extra values included, shown or not), each with the module, bus, or adapter it came from.
 Paste it into a message or an issue, so a friend can see why a reading shows a dash.
 
+The app also keeps a log in `%LOCALAPPDATA%\OverlayMonitor\logs\overlay-monitor.log`, with sensor outcomes as they change and any start-up failure; at 1 MiB it moves to `overlay-monitor.1.log` and keeps three old files (`.1` to `.3`).
+
 ## Quick start
 
 You need rustup (it reads `rust-toolchain.toml`), Git, and on Windows the Visual Studio Build Tools with the C++ workload.

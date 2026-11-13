@@ -14,7 +14,7 @@ pub use ports::{
     DriverStatus, Extras, GpuPair, GpuSensors, PawnIoStatus, ReadError, Sensor, Sensors, SettingsStore, StartupTask,
     StartupTaskError,
 };
-pub use sample::{Outcome, OverlayFrame, ReadingReport, Sampler, SamplerControl};
+pub use sample::{Outcome, OverlayFrame, ReadingReport, Sampler, SamplerControl, is_news};
 pub use settings::{
     Field, InvalidShortcut, Line, LineSettings, LoadSettingsError, OverlayPosition, SaveSettingsError, Settings,
     ShortcutKeys, StyleSettings, blank_frame, line_fields, load_settings, overlay_style,

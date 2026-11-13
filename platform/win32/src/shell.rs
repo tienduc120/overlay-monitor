@@ -2,7 +2,7 @@
 
 use windows::Win32::Foundation::{ERROR_FILE_NOT_FOUND, HWND};
 use windows::Win32::UI::Shell::ShellExecuteW;
-use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+use windows::Win32::UI::WindowsAndMessaging::{MB_ICONERROR, MB_OK, MB_SETFOREGROUND, MessageBoxW, SW_SHOWNORMAL};
 use windows::core::{HRESULT, PCWSTR, w};
 
 use crate::Win32Error;
@@ -34,4 +34,21 @@ pub fn open_url(url: &str) -> Result<(), Win32Error> {
     }
     let code = u32::try_from(code).unwrap_or(ERROR_FILE_NOT_FOUND.0);
     Err(Win32Error::from_hresult(HRESULT::from_win32(code)))
+}
+
+/// Shows `text` in an error box and waits for it to be closed. The release exe has no console, so this is how a
+/// startup failure reaches the user.
+pub fn show_error(title: &str, text: &str) {
+    let title: Vec<u16> = title.encode_utf16().chain(Some(0)).collect();
+    let text: Vec<u16> = text.encode_utf16().chain(Some(0)).collect();
+    // SAFETY: both strings are null-terminated copies that outlive the call, and there is no owner window.
+    // The answer is always `OK`, so it is not read.
+    unsafe {
+        MessageBoxW(
+            None::<HWND>,
+            PCWSTR(text.as_ptr()),
+            PCWSTR(title.as_ptr()),
+            MB_ICONERROR | MB_OK | MB_SETFOREGROUND,
+        );
+    }
 }

@@ -5,7 +5,7 @@ use std::time::Duration;
 use monitor_domain::Layout;
 use platform_clock::{Clock, Timestamp};
 
-use super::Sampler;
+use super::{Outcome, Sampler, is_news};
 use crate::testing::{FakeGpuSensors, FakeSensor};
 use crate::{Extras, Line, ReadError, Sensor, Sensors, Settings, line_fields};
 
@@ -363,4 +363,42 @@ fn sticks_are_reported_joined_by_slashes() {
     s.sample();
 
     assert!(outcomes(&s).contains(&("Memory sticks (°C)", String::from("36.3/33.3"))));
+}
+
+fn failed(text: &str) -> Outcome {
+    Outcome::Failed(text.to_owned())
+}
+
+#[test]
+fn a_failure_that_repeats_is_news_once() {
+    assert!(is_news(&Outcome::Value(1.0), &failed("bus error")));
+    assert!(!is_news(&failed("bus error"), &failed("bus error")));
+    assert!(is_news(
+        &Outcome::NotYet,
+        &Outcome::Unavailable(String::from("no driver"))
+    ));
+    assert!(!is_news(
+        &Outcome::Unavailable(String::from("no driver")),
+        &Outcome::Unavailable(String::from("no driver"))
+    ));
+}
+
+#[test]
+fn a_new_failure_text_is_news() {
+    assert!(is_news(&failed("bus error"), &failed("timeout")));
+    assert!(is_news(
+        &failed("timeout"),
+        &Outcome::Unavailable(String::from("timeout"))
+    ));
+}
+
+#[test]
+fn recovering_is_news_and_a_first_value_is_not() {
+    assert!(is_news(&failed("bus error"), &Outcome::Value(40.0)));
+    assert!(is_news(
+        &Outcome::Unavailable(String::from("no driver")),
+        &Outcome::Value(40.0)
+    ));
+    assert!(!is_news(&Outcome::NotYet, &Outcome::Value(40.0)));
+    assert!(!is_news(&Outcome::Value(40.0), &Outcome::Value(41.0)));
 }

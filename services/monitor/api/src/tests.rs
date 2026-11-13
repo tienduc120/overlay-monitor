@@ -11,6 +11,7 @@ use monitor_application::StartupTask;
 
 use super::{
     SamplerControl, UnavailableStartup, build_sensors, modules_dir, refresh_startup_task, sample_until_stopped,
+    startup_failure_text,
 };
 
 fn fixed_sensors() -> Sensors {
@@ -198,5 +199,31 @@ fn a_report_request_is_answered_without_sampling() {
         received.try_iter().count(),
         1,
         "only the first frame: a report does not sample"
+    );
+}
+
+#[derive(Debug, thiserror::Error)]
+#[error("the access was refused")]
+struct Refused;
+
+#[derive(Debug, thiserror::Error)]
+#[error("create the overlay window")]
+struct CreateWindow(#[source] Refused);
+
+#[test]
+fn a_startup_failure_names_its_cause_and_the_log() {
+    let text = startup_failure_text(&CreateWindow(Refused), Some(Path::new(r"C:\logs")));
+    assert_eq!(
+        text,
+        "Overlay Monitor could not start: create the overlay window: the access was refused\r\n\r\nThe log is in C:\\logs."
+    );
+}
+
+#[test]
+fn without_a_log_folder_the_text_leaves_it_out() {
+    let text = startup_failure_text(&CreateWindow(Refused), None);
+    assert_eq!(
+        text,
+        "Overlay Monitor could not start: create the overlay window: the access was refused"
     );
 }

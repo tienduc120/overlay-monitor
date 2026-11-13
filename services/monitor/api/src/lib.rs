@@ -1,10 +1,11 @@
 //! The composition root: the one place that knows which adapter backs each sensor. It installs the subscriber,
 //! opens the windows, and runs the sampler and the frame counter beside the UI loop.
 
+use std::error::Error;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
-use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
+use std::sync::{Arc, Mutex};
 
 use monitor_application::{
     DriverStatus, GpuPair, GpuSensors, OverlayFrame, Sampler, SamplerControl, Sensor, Sensors, Settings, SettingsStore,
@@ -12,8 +13,8 @@ use monitor_application::{
 };
 use monitor_infrastructure::{
     AdapterSensors, CpuLoad, Ddr5Temperature, FrameCounter, FrameRate, MemoryLoad, PRESENT_PROVIDERS, PawnIoProbe,
-    SchtasksStartup, TASK_NAME, TomlSettingsStore, UnavailableSensor, WindowsSystemInfo, cpu_temperature, is_present,
-    memory_kind, memory_text, memory_types, reopening, settings_path,
+    RollingFile, SchtasksStartup, TASK_NAME, TomlSettingsStore, UnavailableSensor, WindowsSystemInfo, cpu_temperature,
+    is_present, memory_kind, memory_text, memory_types, reopening, settings_path,
 };
 use monitor_interfaces::{OverlayView, Ui, UiParts};
 use platform_clock::{Clock, SystemClock};
@@ -26,12 +27,15 @@ use platform_win32::firmware::smbios_table;
 use platform_win32::gpu::{GpuAdapter, gpu_adapters};
 use platform_win32::icon::Icon;
 use platform_win32::instance::SingleInstance;
-use platform_win32::known_folder::roaming_app_data;
+use platform_win32::known_folder::{local_app_data, roaming_app_data};
 use platform_win32::overlay::OverlayWindow;
+use platform_win32::shell::show_error;
 use platform_win32::tray::TrayIcon;
 use platform_win32::ui::{MessageWindow, run_message_loop};
-use tracing_subscriber::EnvFilter;
 use tracing_subscriber::filter::LevelFilter;
+use tracing_subscriber::layer::SubscriberExt;
+use tracing_subscriber::util::SubscriberInitExt;
+use tracing_subscriber::{EnvFilter, fmt};
 
 /// Held while a copy runs, so a second copy in this session exits at once.
 const INSTANCE_NAME: &str = r"Local\OverlayMonitor";
@@ -39,6 +43,8 @@ const TRACE_SESSION: &str = "OverlayMonitor";
 const TOOLTIP: &str = "Overlay Monitor";
 /// The owner's icon, in the file's several sizes.
 const OWNER_ICON: &[u8] = include_bytes!("../assets/icon.ico");
+const LOG_LIMIT_BYTES: u64 = 1024 * 1024;
+const LOG_KEEP: usize = 3;
 const FPS_NEEDS_ADMIN: &str = "frame counting needs admin or the Performance Log Users group";
 
 /// Why the overlay could not open.
@@ -95,7 +101,7 @@ fn unavailable(reason: &str) -> Box<dyn Sensor> {
 
 /// Runs the overlay until the user exits it or Windows asks it to close.
 pub fn run() -> ExitCode {
-    install_subscriber();
+    let log_dir = install_subscriber();
     if let Err(error) = enable_per_monitor_awareness() {
         // Something set it first; the overlay still runs, only sized for whatever awareness that was.
         tracing::warn!(?error, "per-monitor DPI awareness was already set");
@@ -107,8 +113,7 @@ pub fn run() -> ExitCode {
             return ExitCode::SUCCESS;
         }
         Err(error) => {
-            tracing::error!(?error, "claim the single-instance name");
-            return ExitCode::FAILURE;
+            return fail_to_start(&error, "claim the single-instance name", log_dir.as_deref());
         }
     };
     let store: Box<dyn SettingsStore> = Box::new(TomlSettingsStore::new(settings_file()));
@@ -136,22 +141,68 @@ pub fn run() -> ExitCode {
     let sampler = Sampler::new(sensors, Box::new(gpus), SystemClock, &settings);
     match show_overlay(sampler, settings, store, machine, trace, &counter) {
         Ok(()) => ExitCode::SUCCESS,
-        Err(error) => {
-            tracing::error!(?error, "open the overlay");
-            ExitCode::FAILURE
-        }
+        Err(error) => fail_to_start(&error, "open the overlay", log_dir.as_deref()),
     }
 }
 
-fn install_subscriber() {
+/// The log folder: `logs` in the app's folder under `%LOCALAPPDATA%`, or `None` when Windows cannot name it.
+fn log_dir() -> Option<PathBuf> {
+    local_app_data()
+        .ok()
+        .map(|folder| folder.join("OverlayMonitor").join("logs"))
+}
+
+/// Logs to stderr and to the rolling file. Returns the folder the file is in, or `None` when it could not be opened,
+/// which leaves stderr alone and says so.
+fn install_subscriber() -> Option<PathBuf> {
     let filter = EnvFilter::builder()
         .with_default_directive(LevelFilter::INFO.into())
         .from_env_lossy();
+    let dir = log_dir();
+    let opened = dir
+        .as_deref()
+        .map(|dir| RollingFile::open(dir, LOG_LIMIT_BYTES, LOG_KEEP));
+    let (file, failure) = match opened {
+        Some(Ok(file)) => (Some(file), None),
+        Some(Err(error)) => (None, Some(error)),
+        None => (None, None),
+    };
+    let file_layer = file.map(|file| fmt::layer().with_writer(Mutex::new(file)).with_ansi(false));
     #[expect(clippy::disallowed_methods, reason = "the composition root installs the subscriber")]
-    tracing_subscriber::fmt()
-        .with_writer(std::io::stderr)
-        .with_env_filter(filter)
+    tracing_subscriber::registry()
+        .with(filter)
+        .with(fmt::layer().with_writer(std::io::stderr))
+        .with(file_layer)
         .init();
+    match (&failure, &dir) {
+        (Some(error), _) => tracing::warn!(?error, "the log file could not be opened, so logging is to stderr only"),
+        (None, None) => tracing::warn!("the local app data folder is unknown, so logging is to stderr only"),
+        (None, Some(_)) => {}
+    }
+    dir.filter(|_| failure.is_none())
+}
+
+/// What the message box says when the app could not start: the error and each cause under it, and where the log is.
+pub fn startup_failure_text(error: &(dyn Error + 'static), log_dir: Option<&Path>) -> String {
+    let mut texts = vec![error.to_string()];
+    let mut cause = error.source();
+    while let Some(next) = cause {
+        texts.push(next.to_string());
+        cause = next.source();
+    }
+    let mut text = format!("Overlay Monitor could not start: {}", texts.join(": "));
+    if let Some(dir) = log_dir {
+        text = format!("{text}\r\n\r\nThe log is in {}.", dir.display());
+    }
+    text
+}
+
+/// Logs a startup failure and tells the user, as the release exe has no console to print to.
+fn fail_to_start(error: &(dyn Error + 'static), what: &str, log_dir: Option<&Path>) -> ExitCode {
+    let text = startup_failure_text(error, log_dir);
+    tracing::error!(what, ?error, "startup failed");
+    show_error("Overlay Monitor", &text);
+    ExitCode::FAILURE
 }
 
 /// Registers the start at sign-in again when the setting is on, so the task follows an exe that moved. A refusal is
