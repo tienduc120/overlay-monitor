@@ -1,0 +1,3 @@
+enforcer = "clippy"
+contains = "clippy::mod_module_files"
+doc = "no mod.rs files: name the file after the module"

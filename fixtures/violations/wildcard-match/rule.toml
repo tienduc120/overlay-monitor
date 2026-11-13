@@ -1,0 +1,3 @@
+enforcer = "clippy"
+contains = "clippy::wildcard_enum_match_arm"
+doc = "a new variant must be handled, not swallowed by _"

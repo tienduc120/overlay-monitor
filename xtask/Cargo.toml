@@ -1,0 +1,27 @@
+[package]
+name = "xtask"
+description = "The repository's single command surface: gates, guard, generator, and bounded runs."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+anyhow = { workspace = true }
+cargo_metadata = { workspace = true }
+clap = { workspace = true }
+proc-macro2 = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+syn = { workspace = true }
+toml = { workspace = true }
+toml_edit = { workspace = true }
+walkdir = { workspace = true }
+
+[package.metadata.cargo-shear]
+# Not called directly: it is here to turn on `span-locations`, which gives syn's findings their line numbers.
+ignored = ["proc-macro2"]
+
+[lints]
+workspace = true

@@ -1,0 +1,121 @@
+# The workspace: every crate, every external version, and every lint level live here. Protected: a new dependency or a
+# looser lint is a decision (docs/adr), not an edit. `cargo xtask manifest` holds each member to this file.
+[workspace]
+resolver = "3"
+members = ["xtask", "platform/*", "services/*/*"]
+# Rule fixtures are staged as a workspace of their own by `cargo xtask rules`.
+exclude = ["fixtures"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.99"
+license = "MIT"
+publish = false
+
+[workspace.dependencies]
+# Platform crates. Services reach shared technical code only through these.
+platform-clock = { path = "platform/clock" }
+platform-http = { path = "platform/http" }
+platform-task = { path = "platform/task" }
+
+# Runtime
+windows = "0.62.2"
+axum = { version = "0.8.9", default-features = false, features = ["http1", "json", "tokio"] }
+jiff = { version = "0.2.43", default-features = false }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+thiserror = { version = "2.0.21", default-features = false }
+tokio = { version = "1.54.1", default-features = false }
+tokio-util = { version = "0.7.20", default-features = false }
+tower = { version = "0.5.3", default-features = false }
+tower-http = { version = "0.7.1", default-features = false }
+tracing = { version = "0.1.44", default-features = false, features = ["std", "attributes"] }
+tracing-subscriber = { version = "0.3.23", default-features = false, features = ["std", "fmt", "json", "env-filter"] }
+
+# Tooling (xtask only)
+anyhow = "1.0.104"
+cargo_metadata = "0.23.1"
+clap = { version = "4.6.7", features = ["derive"] }
+proc-macro2 = { version = "1.0.107", features = ["span-locations"] }
+syn = { version = "2.0.119", features = ["full", "visit", "extra-traits"] }
+toml = "1.2.1"
+toml_edit = "0.25.19"
+walkdir = "2.5.0"
+
+# Tests
+http-body-util = "0.1.3"
+
+[workspace.lints.rust]
+unsafe_code = "deny" # refused everywhere; only platform-win32 may expect it (ADR-0012, rule source-unsafe-scope)
+non_ascii_idents = "forbid"
+rust_2018_idioms = { level = "deny", priority = -1 }
+unreachable_pub = "deny"
+unused_qualifications = "deny"
+unit_bindings = "deny"
+redundant_lifetimes = "deny"
+let_underscore_drop = "deny"
+
+[workspace.lints.clippy]
+# Everything clippy has to say, at deny: a warning an agent can ignore is not a rule.
+all = { level = "deny", priority = -1 }
+pedantic = { level = "deny", priority = -1 }
+
+# Pedantic lints that fight the conventions here. Each stays off for the reason given.
+module_name_repetitions = "allow" # domain words repeat by design: note::NoteId
+missing_errors_doc = "allow"      # comments say why, never what; an `# Errors` section on every fn is what
+missing_panics_doc = "allow"      # panicking is denied below, so there is nothing to document
+must_use_candidate = "allow"      # #[must_use] on every getter is noise; Result and futures are must_use already
+
+# Restriction lints, picked one by one.
+undocumented_unsafe_blocks = "deny"
+allow_attributes = "deny"                 # use #[expect], which fails once the reason is gone
+allow_attributes_without_reason = "deny"  # every suppression says why
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+todo = "deny"
+unimplemented = "deny"
+unreachable = "deny"
+dbg_macro = "deny"
+print_stdout = "deny"
+print_stderr = "deny"
+exit = "deny"
+indexing_slicing = "deny"
+string_slice = "deny"
+get_unwrap = "deny"
+unwrap_in_result = "deny"
+panic_in_result_fn = "deny"
+map_err_ignore = "deny"
+let_underscore_must_use = "deny"
+mem_forget = "deny"
+clone_on_ref_ptr = "deny"
+rc_mutex = "deny"
+mod_module_files = "deny"
+tests_outside_test_module = "deny"
+wildcard_enum_match_arm = "deny"
+error_impl_error = "deny"
+try_err = "deny"
+str_to_string = "deny"
+verbose_file_reads = "deny"
+rest_pat_in_fully_bound_structs = "deny"
+same_name_method = "deny"
+if_then_some_else_none = "deny"
+infinite_loop = "deny"
+float_cmp_const = "deny"
+lossy_float_literal = "deny"
+unneeded_field_pattern = "deny"
+renamed_function_params = "deny"
+assertions_on_result_states = "deny"
+excessive_nesting = "deny"
+wildcard_dependencies = "deny"
+
+# Nursery lints, picked one by one.
+cognitive_complexity = "deny"
+redundant_clone = "deny"
+use_self = "deny"
+or_fun_call = "deny"
+needless_pass_by_ref_mut = "deny"
+
+[workspace.lints.rustdoc]
+broken_intra_doc_links = "deny"

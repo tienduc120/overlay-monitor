@@ -1,0 +1,3 @@
+enforcer = "gates"
+contains = "source-restore"
+doc = "only infrastructure rebuilds an aggregate with restore"

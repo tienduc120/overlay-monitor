@@ -1,0 +1,3 @@
+enforcer = "clippy"
+contains = "unsafe_code"
+doc = "no unsafe code"

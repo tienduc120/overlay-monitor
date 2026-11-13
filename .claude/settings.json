@@ -1,0 +1,28 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Edit|Write|MultiEdit|NotebookEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "cd \"$CLAUDE_PROJECT_DIR\" && for b in .xtask/bin/xtask.exe .xtask/bin/xtask; do [ -x \"$b\" ] && exec \"$b\" hook pre-edit; done; exec cargo run --quiet --package xtask -- hook pre-edit",
+            "timeout": 120,
+            "statusMessage": "Checking protected files"
+          }
+        ]
+      },
+      {
+        "matcher": "Bash|PowerShell",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "cd \"$CLAUDE_PROJECT_DIR\" && for b in .xtask/bin/xtask.exe .xtask/bin/xtask; do [ -x \"$b\" ] && exec \"$b\" hook pre-bash; done; exec cargo run --quiet --package xtask -- hook pre-bash",
+            "timeout": 120,
+            "statusMessage": "Checking command"
+          }
+        ]
+      }
+    ]
+  }
+}

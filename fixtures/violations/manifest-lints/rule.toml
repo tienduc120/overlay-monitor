@@ -1,0 +1,3 @@
+enforcer = "gates"
+contains = "manifest-lints"
+doc = "every crate takes the workspace lints"

@@ -1,0 +1,15 @@
+[package]
+name = "example-domain"
+description = "The rules that keep a note valid. Pure: no_std, so no I/O, threads, or clock."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+jiff = { workspace = true }
+thiserror = { workspace = true }
+
+[lints]
+workspace = true

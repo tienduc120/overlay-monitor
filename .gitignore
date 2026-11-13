@@ -1,0 +1,14 @@
+# Build output
+/target/
+
+# Local, uncommitted working notes and scratch
+.local/
+
+# xtask logs, staged fixtures, and the prebuilt hook binary
+.xtask/
+
+# Claude Code reads skills through this link to .agents/skills; `cargo xtask skills link` makes it
+.claude/skills
+
+# Personal Claude Code settings
+.claude/settings.local.json

@@ -1,0 +1,46 @@
+# Supply-chain rules checked by cargo-deny: advisories, licenses, banned crates, and where crates may come from.
+# Protected: an ignored advisory or a new license needs a reason here and the owner's review.
+[graph]
+all-features = false
+
+[advisories]
+version = 2
+yanked = "deny"
+ignore = []
+
+[licenses]
+version = 2
+# Permissive licenses only, the same policy NOTICE.md states for copied material.
+allow = [
+  "MIT",
+  "Apache-2.0",
+  "Apache-2.0 WITH LLVM-exception",
+  "BSD-2-Clause",
+  "BSD-3-Clause",
+  "ISC",
+  "Unicode-3.0",
+  "Zlib",
+]
+confidence-threshold = 0.93
+# Workspace crates are publish = false and carry the repository's own license.
+private = { ignore = true }
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+allow-wildcard-paths = true
+highlight = "all"
+deny = [
+  { crate = "anyhow", wrappers = ["xtask"], reason = "errors are typed values owned by the layer that raises them (ADR-0011); anyhow is for the tool only" },
+  { crate = "async-trait", reason = "ports use native async fn in traits with an explicit Send bound" },
+  { crate = "lazy_static", wrappers = ["sharded-slab"], reason = "use std::sync::LazyLock; sharded-slab (under tracing-subscriber) predates it" },
+  { crate = "serde_yaml", reason = "deprecated and unmaintained" },
+  { crate = "serde_yml", reason = "unsound and unmaintained (RUSTSEC-2025-0068)" },
+  { crate = "openssl", reason = "use rustls; OpenSSL needs a system library on every machine" },
+  { crate = "openssl-sys", reason = "use rustls; OpenSSL needs a system library on every machine" },
+]
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

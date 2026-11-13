@@ -1,0 +1,3 @@
+enforcer = "gates"
+contains = "manifest-name"
+doc = "a package is named after where it lives"

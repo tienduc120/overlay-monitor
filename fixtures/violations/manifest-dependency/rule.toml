@@ -1,0 +1,3 @@
+enforcer = "gates"
+contains = "manifest-dependency"
+doc = "external versions are declared once, in the workspace"

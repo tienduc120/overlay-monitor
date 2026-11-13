@@ -1,0 +1,3 @@
+enforcer = "clippy"
+contains = "disallowed method `axum::serve`"
+doc = "serving goes through platform_http, which requires every timeout"

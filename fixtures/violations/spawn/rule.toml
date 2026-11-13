@@ -1,0 +1,3 @@
+enforcer = "clippy"
+contains = "disallowed method `tokio::task::spawn`"
+doc = "tasks start only through platform_task"

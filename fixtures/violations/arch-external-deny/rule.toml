@@ -1,0 +1,3 @@
+enforcer = "gates"
+contains = "arch-external-deny"
+doc = "interfaces never use a crate architecture.toml denies them"

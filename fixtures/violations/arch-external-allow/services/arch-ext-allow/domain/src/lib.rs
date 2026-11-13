@@ -1,0 +1,2 @@
+//! Fixture.
+#![no_std]

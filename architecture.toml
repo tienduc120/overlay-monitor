@@ -1,0 +1,59 @@
+# Layer rules for strict DDD and clean architecture, checked by `cargo xtask arch` against the real dependency graph
+# (`cargo metadata`). Protected: never loosen a rule to make a change pass. Every rule has a fixture in fixtures/.
+#
+# Where a crate lives decides its kind:
+#   services/<service>/<layer>   one of the layer kinds below; its package is named <service>-<layer>
+#   platform/<name>              kind "platform"; its package is named platform-<name>
+#   xtask                        kind "tool"
+# A crate anywhere else is an error.
+#
+# For each kind:
+#   layers    sibling layers of the SAME service it may depend on (another service's crates never)
+#   platform  platform crates it may depend on ("*" for all)
+#   allow     if present, the only external crates it may depend on
+#   deny      external crates it must not depend on
+#   no_std    its lib.rs must start with #![no_std], so the compiler keeps I/O, threads, and the clock out
+# The rules apply to normal and build dependencies. Dev-dependencies may add external test crates, but obey `layers`.
+
+# Windows calls go through platform-win32, the only crate with unsafe (ADR-0012, ADR-0013).
+[kinds.domain]
+# The domain is pure: rules and values, nothing that touches the world. Time arrives as a value.
+layers = []
+platform = []
+allow = ["thiserror", "jiff"]
+no_std = true
+
+[kinds.application]
+# Use cases orchestrate the domain and declare the ports adapters implement. No runtime, no web, no database.
+layers = ["domain"]
+platform = ["platform-clock"]
+allow = ["thiserror", "tracing", "jiff"]
+
+[kinds.infrastructure]
+# Adapters depend inward and never on the delivery layer.
+layers = ["domain", "application"]
+platform = ["*"]
+deny = ["axum", "tower-http", "hyper", "anyhow", "windows"]
+
+[kinds.interfaces]
+# Delivery talks to use cases only; domain types and storage stay behind the application boundary.
+layers = ["application"]
+platform = ["*"]
+deny = ["sqlx", "anyhow", "windows"]
+
+[kinds.api]
+# The composition root: wires adapters to use cases and serves them. Nothing depends on it.
+layers = ["domain", "application", "infrastructure", "interfaces"]
+platform = ["*"]
+deny = ["anyhow", "windows"]
+
+[kinds.platform]
+# Shared technical code knows nothing of any service.
+layers = []
+platform = ["*"]
+deny = ["anyhow"]
+
+[kinds.tool]
+# The xtask command surface. It may use anything, and nothing may depend on it.
+layers = []
+platform = []

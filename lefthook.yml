@@ -1,0 +1,15 @@
+# Git hooks. Protected: never bypass with --no-verify, and never loosen a hook to make a change pass.
+pre-commit:
+  jobs:
+    - name: verify
+      run: cargo xtask verify
+
+commit-msg:
+  jobs:
+    - name: commit message
+      run: cargo xtask commitmsg {1}
+
+pre-push:
+  jobs:
+    - name: verify full
+      run: cargo xtask verify --full

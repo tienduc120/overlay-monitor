@@ -1,0 +1,3 @@
+enforcer = "gates"
+contains = "source-inner-allow"
+doc = "no crate-wide #![allow]"

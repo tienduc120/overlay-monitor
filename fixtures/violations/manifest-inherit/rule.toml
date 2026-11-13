@@ -1,0 +1,3 @@
+enforcer = "gates"
+contains = "manifest-inherit"
+doc = "package fields come from the workspace"

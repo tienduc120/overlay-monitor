@@ -1,0 +1,19 @@
+[package]
+name = "example-infrastructure"
+description = "Adapters for this service's ports."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+example-application = { path = "../application" }
+example-domain = { path = "../domain" }
+
+[dev-dependencies]
+jiff = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt"] }
+
+[lints]
+workspace = true

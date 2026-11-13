@@ -1,0 +1,3 @@
+enforcer = "gates"
+contains = "arch-platform"
+doc = "a layer uses only the platform crates its kind allows"

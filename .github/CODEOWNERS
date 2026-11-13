@@ -1,0 +1,19 @@
+# The rules that judge changes, and the legal text. A change to any of these needs the owner's review, which is what
+# makes the local agent guard a speed bump rather than the only protection. Turn on "Require review from Code Owners"
+# in the branch protection rules so this is enforced.
+/Cargo.toml @tienduc120
+/rust-toolchain.toml @tienduc120
+/clippy.toml @tienduc120
+/rustfmt.toml @tienduc120
+/deny.toml @tienduc120
+/architecture.toml @tienduc120
+/typos.toml @tienduc120
+/.config/ @tienduc120
+/.cargo/ @tienduc120
+/lefthook.yml @tienduc120
+/.github/ @tienduc120
+/.claude/settings.json @tienduc120
+/xtask/src/gates.rs @tienduc120
+/xtask/src/gates/ @tienduc120
+/fixtures/ @tienduc120
+/LICENSE @tienduc120

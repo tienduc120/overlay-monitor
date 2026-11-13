@@ -1,0 +1,3 @@
+enforcer = "gates"
+contains = "arch-external-allow"
+doc = "the domain uses only its allowlisted external crates"

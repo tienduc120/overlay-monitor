@@ -1,0 +1,3 @@
+enforcer = "gates"
+contains = "arch-location"
+doc = "a crate lives in services/<service>/<layer>, platform/<name>, or xtask"

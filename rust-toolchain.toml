@@ -1,0 +1,5 @@
+# The one toolchain every machine and CI job uses. Moving it is an ADR (see docs/adr/0001-foundations.md).
+[toolchain]
+channel = "1.99.1"
+components = ["rustfmt", "clippy"]
+profile = "minimal"

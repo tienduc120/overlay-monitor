@@ -1,0 +1,3 @@
+enforcer = "clippy"
+contains = "disallowed method `std::time::SystemTime::now`"
+doc = "time comes through the Clock port"

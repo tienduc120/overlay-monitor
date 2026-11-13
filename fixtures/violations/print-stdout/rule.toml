@@ -1,0 +1,3 @@
+enforcer = "clippy"
+contains = "clippy::print_stdout"
+doc = "no println: log through tracing"

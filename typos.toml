@@ -1,0 +1,7 @@
+# Spelling check for code, comments, and docs (crate-ci/typos). Protected.
+[files]
+extend-exclude = ["target/", "*.lock", "LICENSES/", ".xtask/"]
+
+[default.extend-identifiers]
+# The Win32 tray notification code (shellapi.h); the plan and the tray code name it.
+NIN_SELECT = "NIN_SELECT"

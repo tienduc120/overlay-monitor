@@ -1,0 +1,23 @@
+[package]
+name = "example-application"
+description = "This service's use cases, and the ports their adapters implement."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+example-domain = { path = "../domain" }
+platform-clock = { workspace = true }
+thiserror = { workspace = true, features = ["std"] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt"] }
+
+[features]
+# Fakes of this crate's ports for other layers' tests; only ever a dev-dependency feature.
+test-support = []
+
+[lints]
+workspace = true

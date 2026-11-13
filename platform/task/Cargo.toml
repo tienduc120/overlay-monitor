@@ -1,0 +1,19 @@
+[package]
+name = "platform-task"
+description = "Supervised concurrency: the only place a task is started (ADR-0009)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+thiserror = { workspace = true, features = ["std"] }
+tokio = { workspace = true, features = ["rt", "time", "macros"] }
+tokio-util = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt", "time", "test-util"] }
+
+[lints]
+workspace = true
