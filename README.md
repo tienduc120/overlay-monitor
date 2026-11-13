@@ -53,7 +53,7 @@ Each line shows the values the settings turn on, in this order. A missing or sta
 
 **Settings…** in the tray or overlay menu opens a window with three groups. Style and Readings changes show on the overlay at once; the shortcuts and Start with Windows take effect on **OK**. **OK** saves everything, and **Cancel** or Esc puts everything back.
 
-- Style: the font, its size, bold and italic, the text, outline, and background colours, the outline width, and the background opacity.
+- Style: the font from a drop-down of the installed families, its size in a box with up and down arrows, Bold and Italic boxes, the text, outline, and background colours (click a swatch to change it), the outline width, and the background opacity.
 - Readings: for each line, whether it shows, its label, and which of its values show (the table above), plus the GPU adapter and how often the overlay updates.
 - General: the two shortcuts, start with Windows, and the state of PawnIO with an **Install…** button that opens its page when the driver is missing or too old.
 

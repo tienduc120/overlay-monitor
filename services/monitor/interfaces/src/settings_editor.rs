@@ -5,10 +5,11 @@ use std::fmt;
 use std::time::Duration;
 
 use monitor_application::{Field, Line, Settings, ShortcutKeys, line_fields};
-use platform_win32::dialog::FontChoice;
 
 const SHORTEST_SECS: f64 = 0.25;
 const LONGEST_SECS: f64 = 5.0;
+const SMALLEST_FONT_PT: u8 = 6;
+const LARGEST_FONT_PT: u8 = 72;
 const MAX_OUTLINE_PX: u8 = 8;
 const MAX_OPACITY_PERCENT: u8 = 100;
 
@@ -52,6 +53,7 @@ impl ShortcutSlot {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Problem {
     Interval,
+    FontSize,
     OutlineWidth,
     Opacity,
     EmptyLabel,
@@ -64,6 +66,7 @@ impl fmt::Display for Problem {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
             Self::Interval => "Update every: enter seconds from 0.25 to 5.",
+            Self::FontSize => "Font size: enter whole points from 6 to 72.",
             Self::OutlineWidth => "Outline width: enter whole pixels from 0 to 8.",
             Self::Opacity => "Background opacity: enter a whole percent from 0 to 100.",
             Self::EmptyLabel => "Every label needs at least one character.",
@@ -86,6 +89,7 @@ pub(crate) enum Change {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 enum Spot {
     Interval,
+    FontSize,
     OutlineWidth,
     Opacity,
     Label(Line),
@@ -181,20 +185,24 @@ impl SettingsEditor {
         store(pick(&mut self.edited), value)
     }
 
-    pub(crate) fn set_font(&mut self, font: &FontChoice) -> Change {
-        let style = &mut self.edited.style;
-        if style.font_family == font.family
-            && style.size_pt.to_bits() == font.size_pt.to_bits()
-            && style.bold == font.bold
-            && style.italic == font.italic
-        {
-            return Change::Unchanged;
-        }
-        style.font_family.clone_from(&font.family);
-        style.size_pt = font.size_pt;
-        style.bold = font.bold;
-        style.italic = font.italic;
-        Change::Preview
+    pub(crate) fn set_family(&mut self, family: &str) -> Change {
+        store(&mut self.edited.style.font_family, family.to_owned())
+    }
+
+    /// Whole points from 6 to 72; anything else is refused, not clamped.
+    pub(crate) fn set_size(&mut self, text: &str) -> Change {
+        let points = whole(text, LARGEST_FONT_PT)
+            .filter(|n| *n >= SMALLEST_FONT_PT)
+            .map(f32::from);
+        self.settle(Spot::FontSize, Problem::FontSize, points, |s| &mut s.style.size_pt)
+    }
+
+    pub(crate) fn set_bold(&mut self, on: bool) -> Change {
+        store(&mut self.edited.style.bold, on)
+    }
+
+    pub(crate) fn set_italic(&mut self, on: bool) -> Change {
+        store(&mut self.edited.style.italic, on)
     }
 
     pub(crate) fn set_colour(&mut self, which: Colour, rgb: u32) -> Change {

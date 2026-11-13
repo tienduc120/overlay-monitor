@@ -4,17 +4,23 @@ use monitor_application::{
     Field, Line, LineSettings, OverlayPosition, PawnIoStatus, Settings, ShortcutKeys, StyleSettings,
 };
 use platform_win32::dialog::{DECORATIVE_ID, DialogChange, ItemKind};
+use platform_win32::text::installed_font_families;
 use platform_win32::ui::{MessageWindow, pump_messages_for};
 
 use crate::hotkey_keys;
 
 use super::{
-    PAWNIO_URL, SettingsWindow, WindowOutcome, font_text, keep_live_view_state, offers_install, seconds_text,
-    settings_template,
+    PAWNIO_URL, SettingsWindow, WindowOutcome, font_family_list, keep_live_view_state, offers_install, seconds_text,
+    settings_template, size_text,
 };
 
 fn gpu_names() -> Vec<String> {
     vec!["Radeon RX 9060 XT".to_owned(), "AMD Radeon(TM) Graphics".to_owned()]
+}
+
+/// The entries the family drop-down holds for a window opened with Consolas.
+fn family_names() -> Vec<String> {
+    font_family_list(&installed_font_families().unwrap(), "Consolas")
 }
 
 fn open(window: &MessageWindow) -> SettingsWindow {
@@ -41,7 +47,7 @@ fn every_control_id_appears_once() {
 
     assert_eq!(ids.len(), count, "an id is used twice");
     let mut expected: Vec<u16> = vec![1, 2, 220, 221, 400];
-    expected.extend(101..=110);
+    expected.extend([101, 102, 103, 105, 106, 108, 109, 111, 112, 113]);
     expected.extend(201..=204);
     expected.extend(301..=305);
     expected.extend(211..=214);
@@ -61,17 +67,43 @@ fn ok_is_the_default_button_and_cancel_is_id_2() {
 }
 
 #[test]
-fn the_font_line_reads_like_the_mockup() {
-    let arial = StyleSettings {
-        font_family: "Arial".to_owned(),
-        size_pt: 10.5,
-        bold: false,
-        italic: true,
-        ..Settings::default().style
-    };
+fn the_size_shows_whole_points_plainly_and_a_saved_fraction_as_it_is() {
+    assert_eq!(size_text(14.0), "14");
+    assert_eq!(size_text(10.5), "10.5");
+}
 
-    assert_eq!(font_text(&Settings::default().style), "Consolas Bold, 14 pt");
-    assert_eq!(font_text(&arial), "Arial Italic, 10.5 pt");
+fn names(list: &[&str]) -> Vec<String> {
+    list.iter().map(|name| (*name).to_owned()).collect()
+}
+
+#[test]
+fn the_family_list_is_sorted_without_duplicates() {
+    let installed = names(&["Verdana", "arial", "Consolas", "Arial", "Segoe UI", "Consolas"]);
+
+    let list = font_family_list(&installed, "Consolas");
+
+    assert_eq!(list, ["Arial", "Consolas", "Segoe UI", "Verdana"]);
+}
+
+#[test]
+fn a_saved_family_that_is_not_installed_is_listed_once_in_order() {
+    let installed = names(&["Arial", "Verdana"]);
+
+    let list = font_family_list(&installed, "Comic Mono");
+
+    assert_eq!(list, ["Arial", "Comic Mono", "Verdana"]);
+    assert_eq!(
+        font_family_list(&list, "Comic Mono"),
+        list,
+        "listing it again adds nothing"
+    );
+}
+
+#[test]
+fn an_installed_family_saved_in_other_letters_is_not_listed_twice() {
+    let list = font_family_list(&names(&["Consolas"]), "consolas");
+
+    assert_eq!(list, ["Consolas"]);
 }
 
 #[test]
@@ -95,7 +127,19 @@ fn opening_fills_the_controls_from_the_settings() {
     assert_eq!(labels, ["FPS", "CPU", "GPU", "DDR5"]);
     assert_eq!(dialog.text(221), "1.0");
     assert_eq!(dialog.choice(220), Some(0), "automatic");
-    assert_eq!(dialog.text(101), "Consolas Bold, 14 pt");
+    let families = family_names();
+    assert_eq!(
+        dialog
+            .choice(101)
+            .and_then(|index| families.get(index))
+            .map(String::as_str),
+        Some("Consolas"),
+        "the current family is the one selected"
+    );
+    assert_eq!(dialog.text(102), "14");
+    assert!(dialog.is_checked(112) && !dialog.is_checked(113), "bold, not italic");
+    assert_eq!(dialog.spin_buddy(111), Some(102));
+    assert_eq!(dialog.spin_range(111), Some((6, 72)));
     assert_eq!((dialog.text(106).as_str(), dialog.text(109).as_str()), ("2", "0"));
     let values = [231, 232, 233, 241, 242, 251, 252, 253, 254, 255, 261, 262, 263, 264];
     let ticked: Vec<u16> = values.into_iter().filter(|id| dialog.is_checked(*id)).collect();
@@ -421,4 +465,128 @@ fn a_ticked_start_box_reaches_the_finished_settings() {
         panic!("expected the end of the edit, got {outcome:?}");
     };
     assert!(settings.start_with_windows);
+}
+
+#[test]
+fn an_uninstalled_saved_family_stays_selected_and_visible() {
+    let window = MessageWindow::create().unwrap();
+    let settings = Settings {
+        style: StyleSettings {
+            font_family: "A Font Nobody Installed".to_owned(),
+            ..Settings::default().style
+        },
+        ..Settings::default()
+    };
+
+    let opened = SettingsWindow::open(&window, &settings, &gpu_names(), &PawnIoStatus::NotInstalled).unwrap();
+
+    let list = font_family_list(&installed_font_families().unwrap(), "A Font Nobody Installed");
+    let at = opened.dialog.choice(101).unwrap();
+    assert_eq!(list.get(at).map(String::as_str), Some("A Font Nobody Installed"));
+}
+
+#[test]
+fn choosing_a_family_previews_it() {
+    let window = MessageWindow::create().unwrap();
+    let mut opened = open(&window);
+    let list = family_names();
+    let segoe = list.iter().position(|name| name == "Segoe UI").unwrap();
+
+    opened.dialog.set_choices(101, &list, segoe);
+    let outcome = opened.on_event(101, DialogChange::Selected);
+
+    let WindowOutcome::Preview(settings) = outcome else {
+        panic!("expected a preview, got {outcome:?}");
+    };
+    assert_eq!(settings.style.font_family, "Segoe UI");
+}
+
+#[test]
+fn a_typed_size_previews_when_valid_and_shows_the_problem_when_not() {
+    let window = MessageWindow::create().unwrap();
+    let mut opened = open(&window);
+
+    opened.dialog.set_text(102, "20");
+    let good = opened.on_event(102, DialogChange::Edited);
+    opened.dialog.set_text(102, "99");
+    let bad = opened.on_event(102, DialogChange::Edited);
+
+    let WindowOutcome::Preview(settings) = good else {
+        panic!("expected a preview, got {good:?}");
+    };
+    assert_eq!(settings.style.size_pt.to_bits(), 20.0_f32.to_bits());
+    assert_eq!(bad, WindowOutcome::Nothing);
+    assert_eq!(opened.dialog.text(400), "Font size: enter whole points from 6 to 72.");
+    assert_eq!(opened.dialog.text(102), "99", "the typed value is not clamped");
+}
+
+#[test]
+fn bold_and_italic_boxes_preview_at_once() {
+    let window = MessageWindow::create().unwrap();
+    let mut opened = open(&window);
+
+    opened.dialog.set_checked(112, false);
+    let plain = opened.on_event(112, DialogChange::Clicked);
+    opened.dialog.set_checked(113, true);
+    let slanted = opened.on_event(113, DialogChange::Clicked);
+
+    let (WindowOutcome::Preview(first), WindowOutcome::Preview(second)) = (&plain, &slanted) else {
+        panic!("expected two previews, got {plain:?} and {slanted:?}");
+    };
+    assert!(!first.style.bold && !first.style.italic);
+    assert!(!second.style.bold && second.style.italic);
+}
+
+#[test]
+fn the_style_section_has_no_change_buttons() {
+    let template = settings_template();
+
+    assert!(template.items.iter().all(|item| item.text != "Change\u{2026}"));
+    let kind = |id: u16| control(&template, id)[0].kind;
+    assert_eq!(kind(101), ItemKind::DropDownList);
+    assert_eq!(kind(102), ItemKind::NumberEdit);
+    assert_eq!(kind(111), ItemKind::Spin { min: 6, max: 72 });
+    assert_eq!((kind(112), kind(113)), (ItemKind::CheckBox, ItemKind::CheckBox));
+    for swatch in [103, 105, 108] {
+        assert_eq!(kind(swatch), ItemKind::Swatch, "the swatch itself opens its picker");
+    }
+}
+
+#[test]
+fn clicking_a_swatch_asks_for_that_colour_and_previews_the_answer() {
+    let window = MessageWindow::create().unwrap();
+    let mut opened = open(&window);
+    // The real picker is modal and would block the test, so a stand-in answers.
+    opened.pick_colour = |_, current| {
+        assert_eq!(current, 0x0000_FF00, "the picker starts at the text colour");
+        Some(0x0012_3456)
+    };
+
+    let outcome = opened.on_event(103, DialogChange::Clicked);
+
+    let WindowOutcome::Preview(settings) = outcome else {
+        panic!("expected a preview, got {outcome:?}");
+    };
+    assert_eq!(settings.style.text_rgb, 0x0012_3456);
+}
+
+#[test]
+fn a_cancelled_colour_picker_changes_nothing_and_each_swatch_has_its_own_colour() {
+    let window = MessageWindow::create().unwrap();
+    let mut opened = open(&window);
+    opened.pick_colour = |_, _| None;
+
+    let cancelled = opened.on_event(105, DialogChange::Clicked);
+    opened.pick_colour = |_, current| {
+        assert_eq!(current, 0x0000_0000);
+        Some(0x00AB_CDEF)
+    };
+    let background = opened.on_event(108, DialogChange::Clicked);
+
+    assert_eq!(cancelled, WindowOutcome::Nothing);
+    let WindowOutcome::Preview(settings) = background else {
+        panic!("expected a preview, got {background:?}");
+    };
+    assert_eq!(settings.style.background_rgb, 0x00AB_CDEF);
+    assert_eq!(settings.style.outline_rgb, 0, "the outline swatch was cancelled");
 }

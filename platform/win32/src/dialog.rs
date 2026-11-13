@@ -8,29 +8,29 @@ use std::ptr;
 use std::rc::Rc;
 use std::sync::Once;
 
-use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, WPARAM};
+use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, RECT, WPARAM};
 use windows::Win32::Graphics::Gdi::{
-    CreateSolidBrush, DEFAULT_CHARSET, DeleteObject, FW_BOLD, FW_NORMAL, GetDC, GetDeviceCaps, HBRUSH, HGDIOBJ,
-    InvalidateRect, LOGFONTW, LOGPIXELSY, ReleaseDC,
+    COLOR_WINDOWFRAME, CreateSolidBrush, DeleteObject, DrawFocusRect, FillRect, FrameRect, GetSysColorBrush, HBRUSH,
+    HGDIOBJ, InvalidateRect,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
-use windows::Win32::UI::Controls::Dialogs::{
-    CC_FULLOPEN, CC_RGBINIT, CF_INITTOLOGFONTSTRUCT, CF_LIMITSIZE, CF_SCREENFONTS, CHOOSECOLORW, CHOOSEFONTW,
-    ChooseColorW, ChooseFontW,
-};
+use windows::Win32::UI::Controls::Dialogs::{CC_FULLOPEN, CC_RGBINIT, CHOOSECOLORW, ChooseColorW};
 use windows::Win32::UI::Controls::{
-    HKCOMB_NONE, HKCOMB_S, HKM_GETHOTKEY, HKM_SETHOTKEY, HKM_SETRULES, HOTKEYF_ALT, HOTKEYF_CONTROL, HOTKEYF_SHIFT,
-    ICC_HOTKEY_CLASS, INITCOMMONCONTROLSEX, InitCommonControlsEx,
+    DRAWITEMSTRUCT, HKCOMB_NONE, HKCOMB_S, HKM_GETHOTKEY, HKM_SETHOTKEY, HKM_SETRULES, HOTKEYF_ALT, HOTKEYF_CONTROL,
+    HOTKEYF_SHIFT, ICC_HOTKEY_CLASS, ICC_UPDOWN_CLASS, INITCOMMONCONTROLSEX, InitCommonControlsEx, ODS_FOCUS,
+    UDM_GETBUDDY, UDM_GETRANGE32, UDM_SETBUDDY, UDM_SETPOS32, UDM_SETRANGE32, UDS_ALIGNRIGHT, UDS_ARROWKEYS,
+    UDS_NOTHOUSANDS, UDS_SETBUDDYINT,
 };
 use windows::Win32::UI::Input::KeyboardAndMouse::{EnableWindow, IsWindowEnabled};
 use windows::Win32::UI::WindowsAndMessaging::{
-    BM_GETCHECK, BM_SETCHECK, BN_CLICKED, BS_AUTOCHECKBOX, BS_DEFPUSHBUTTON, BS_GROUPBOX, BS_PUSHBUTTON, CB_ADDSTRING,
-    CB_ERR, CB_GETCURSEL, CB_RESETCONTENT, CB_SETCURSEL, CBN_SELCHANGE, CBS_DROPDOWNLIST, CreateDialogIndirectParamW,
-    DS_CENTER, DS_MODALFRAME, DS_SETFONT, DestroyWindow, EN_CHANGE, ES_AUTOHSCROLL, ES_NUMBER, GWLP_USERDATA,
-    GetDlgCtrlID, GetDlgItem, GetWindowLongPtrW, GetWindowTextLengthW, GetWindowTextW, IsIconic, SW_RESTORE, SW_SHOW,
-    SendMessageW, SetForegroundWindow, SetWindowLongPtrW, SetWindowTextW, ShowWindow, WM_CLOSE, WM_COMMAND,
-    WM_CTLCOLORSTATIC, WM_INITDIALOG, WS_BORDER, WS_CAPTION, WS_CHILD, WS_EX_APPWINDOW, WS_POPUP, WS_SYSMENU,
-    WS_TABSTOP, WS_VISIBLE, WS_VSCROLL,
+    BM_GETCHECK, BM_SETCHECK, BN_CLICKED, BS_AUTOCHECKBOX, BS_DEFPUSHBUTTON, BS_GROUPBOX, BS_OWNERDRAW, BS_PUSHBUTTON,
+    CB_ADDSTRING, CB_ERR, CB_GETCURSEL, CB_RESETCONTENT, CB_SETCURSEL, CBN_SELCHANGE, CBS_DROPDOWNLIST,
+    CreateDialogIndirectParamW, DS_CENTER, DS_MODALFRAME, DS_SETFONT, DestroyWindow, EN_CHANGE, ES_AUTOHSCROLL,
+    ES_NUMBER, GWLP_USERDATA, GetDlgCtrlID, GetDlgItem, GetWindowLongPtrW, GetWindowTextLengthW, GetWindowTextW,
+    IDC_HAND, IsIconic, LoadCursorW, SW_RESTORE, SW_SHOW, SendMessageW, SetCursor, SetForegroundWindow,
+    SetWindowLongPtrW, SetWindowTextW, ShowWindow, WINDOW_LONG_PTR_INDEX, WM_CLOSE, WM_COMMAND, WM_DRAWITEM,
+    WM_INITDIALOG, WM_SETCURSOR, WS_BORDER, WS_CAPTION, WS_CHILD, WS_EX_APPWINDOW, WS_POPUP, WS_SYSMENU, WS_TABSTOP,
+    WS_VISIBLE, WS_VSCROLL,
 };
 use windows::core::PCWSTR;
 
@@ -47,6 +47,7 @@ const CLASS_EDIT: u16 = 0x0081;
 const CLASS_STATIC: u16 = 0x0082;
 const CLASS_COMBO_BOX: u16 = 0x0085;
 const CLASS_HOTKEY: &str = "msctls_hotkey32";
+const CLASS_UPDOWN: &str = "msctls_updown32";
 
 /// What an item of the dialog is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -63,8 +64,14 @@ pub enum ItemKind {
     DropDownList,
     /// A field that records a key combination.
     HotKey,
-    /// A bordered rectangle painted in a colour set from code.
+    /// A button that shows a colour set from code and reports its clicks, so Tab and Space reach it too.
     Swatch,
+    /// Up and down arrows for the edit placed just before it, whole numbers from `min` to `max`; the edit shows the
+    /// number and reports each change as its own.
+    Spin {
+        min: i16,
+        max: i16,
+    },
 }
 
 /// One control of the dialog; the position and size are in dialog units.
@@ -89,15 +96,6 @@ pub struct DialogTemplate {
     pub items: Vec<DialogItem>,
 }
 
-/// A font as the settings store it; plain data, the picker that fills it is separate.
-#[derive(Clone, Debug, PartialEq)]
-pub struct FontChoice {
-    pub family: String,
-    pub size_pt: f32,
-    pub bold: bool,
-    pub italic: bool,
-}
-
 /// What the user did to a control.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DialogChange {
@@ -111,16 +109,11 @@ const DIALOG_STYLE: u32 =
     DS_SETFONT as u32 | DS_MODALFRAME as u32 | DS_CENTER as u32 | WS_POPUP.0 | WS_CAPTION.0 | WS_SYSMENU.0;
 /// The id of the Cancel button, which closing the window stands for.
 const CANCEL_ID: u16 = 2;
+/// `DWLP_MSGRESULT`: where a dialog procedure leaves the answer to a message it handled, since its return value only
+/// says it was handled.
+const MESSAGE_RESULT: WINDOW_LONG_PTR_INDEX = WINDOW_LONG_PTR_INDEX(0);
 const FONT_POINTS: u16 = 9;
 const FONT_FAMILY: &str = "Segoe UI";
-/// The font picker's size limits, in points.
-const SMALLEST_FONT_PT: i32 = 6;
-const LARGEST_FONT_PT: i32 = 72;
-/// `FW_SEMIBOLD`: a face this heavy draws as bold, so the overlay's bold-or-not keeps it heavy.
-const BOLD_FROM_WEIGHT: i32 = 600;
-const POINTS_PER_INCH: f32 = 72.0;
-/// What a screen reports when Windows cannot say.
-const DEFAULT_DPI: i32 = 96;
 
 enum Class {
     Atom(u16),
@@ -146,7 +139,12 @@ fn item_class_and_style(kind: ItemKind) -> (Class, u32) {
             input | CBS_DROPDOWNLIST as u32 | WS_VSCROLL.0,
         ),
         ItemKind::HotKey => (Class::Name(CLASS_HOTKEY), input | WS_BORDER.0),
-        ItemKind::Swatch => (Class::Atom(CLASS_STATIC), child | WS_BORDER.0),
+        ItemKind::Swatch => (Class::Atom(CLASS_BUTTON), input | BS_OWNERDRAW as u32),
+        // Not a tab stop: its edit is, and the arrow keys work from there.
+        ItemKind::Spin { .. } => (
+            Class::Name(CLASS_UPDOWN),
+            child | UDS_SETBUDDYINT | UDS_ALIGNRIGHT | UDS_ARROWKEYS | UDS_NOTHOUSANDS,
+        ),
     }
 }
 
@@ -243,10 +241,10 @@ fn init_common_controls() {
     ONCE.call_once(|| {
         let classes = INITCOMMONCONTROLSEX {
             dwSize: u32::try_from(size_of::<INITCOMMONCONTROLSEX>()).unwrap_or(u32::MAX),
-            dwICC: ICC_HOTKEY_CLASS,
+            dwICC: ICC_HOTKEY_CLASS | ICC_UPDOWN_CLASS,
         };
-        // SAFETY: `classes` is a live local with its size set. A failure leaves the hotkey field unregistered, which
-        // the dialog's creation then reports.
+        // SAFETY: `classes` is a live local with its size set. A failure leaves the hotkey and arrow controls
+        // unregistered, which the dialog's creation then reports.
         unsafe { InitCommonControlsEx(&raw const classes) }.as_bool();
     });
 }
@@ -301,6 +299,11 @@ impl Dialog {
         for item in template.items.iter().filter(|item| item.kind == ItemKind::HotKey) {
             dialog.limit_hotkey_field(item.id);
         }
+        for (before, item) in template.items.iter().zip(template.items.iter().skip(1)) {
+            if let ItemKind::Spin { min, max } = item.kind {
+                dialog.attach_arrows(item.id, before.id, (i32::from(min), i32::from(max)));
+            }
+        }
         // SAFETY: the window is ours; the calls have no other preconditions.
         unsafe { ShowWindow(window, SW_SHOW) }.as_bool();
         dialog.bring_to_front();
@@ -316,6 +319,56 @@ impl Dialog {
         let fallback = isize::try_from(HOTKEYF_CONTROL).unwrap_or(0);
         // SAFETY: the control is alive; the arguments are the invalid combinations and the modifier that replaces them.
         self.quietly(|| unsafe { SendMessageW(control, HKM_SETRULES, Some(WPARAM(invalid)), Some(LPARAM(fallback))) });
+    }
+
+    /// Makes `buddy` (an edit) the number the arrows `arrows` step, within `range`; the edit keeps the number it had.
+    fn attach_arrows(&self, arrows: u16, buddy: u16, (min, max): (i32, i32)) {
+        let (Some(spin), Some(edit)) = (self.control(arrows), self.control(buddy)) else {
+            return;
+        };
+        let start = self.text(buddy).trim().parse::<i32>().unwrap_or(min).clamp(min, max);
+        let edit_handle = edit.0.expose_provenance();
+        // SAFETY: both controls are alive; the arguments are a range, the buddy's handle, and a position. Setting the
+        // buddy rewrites its text from the position, so the start is set after it.
+        self.quietly(|| unsafe {
+            SendMessageW(
+                spin,
+                UDM_SETRANGE32,
+                Some(WPARAM(min.cast_unsigned() as usize)),
+                Some(LPARAM(max as isize)),
+            );
+            SendMessageW(spin, UDM_SETBUDDY, Some(WPARAM(edit_handle)), None);
+            SendMessageW(spin, UDM_SETPOS32, None, Some(LPARAM(start as isize)));
+        });
+    }
+
+    /// The id of the edit these arrows step, or `None` for a control that is not arrows or has no edit.
+    pub fn spin_buddy(&self, id: u16) -> Option<u16> {
+        let spin = self.control(id)?;
+        // SAFETY: the control is alive; UDM_GETBUDDY takes no arguments.
+        let buddy = unsafe { SendMessageW(spin, UDM_GETBUDDY, None, None) }.0;
+        if buddy == 0 {
+            return None;
+        }
+        let handle = HWND(ptr::with_exposed_provenance_mut(buddy.cast_unsigned()));
+        // SAFETY: the handle is the window the arrows named.
+        u16::try_from(unsafe { GetDlgCtrlID(handle) }).ok()
+    }
+
+    /// The smallest and largest number these arrows step between.
+    pub fn spin_range(&self, id: u16) -> Option<(i32, i32)> {
+        let spin = self.control(id)?;
+        let (mut min, mut max) = (0_i32, 0_i32);
+        // SAFETY: the control is alive; both pointers are live locals the call fills.
+        unsafe {
+            SendMessageW(
+                spin,
+                UDM_GETRANGE32,
+                Some(WPARAM(ptr::from_mut(&mut min).expose_provenance())),
+                Some(LPARAM(ptr::from_mut(&mut max).expose_provenance().cast_signed())),
+            )
+        };
+        Some((min, max))
     }
 
     /// The control with this id, or `None` when the dialog has none.
@@ -476,44 +529,6 @@ impl Dialog {
             .is_some_and(|control| unsafe { IsWindowEnabled(control) }.as_bool())
     }
 
-    /// Opens Windows' font picker at `current`, over this dialog until it closes; `None` when the user cancels it.
-    pub fn choose_font(&self, current: &FontChoice) -> Option<FontChoice> {
-        let mut font = LOGFONTW {
-            lfHeight: logfont_height(current.size_pt, screen_dpi()),
-            lfWeight: if current.bold { FW_BOLD.0 } else { FW_NORMAL.0 }.cast_signed(),
-            lfItalic: u8::from(current.italic),
-            lfCharSet: DEFAULT_CHARSET,
-            ..LOGFONTW::default()
-        };
-        // The last unit stays 0, so a long name is cut rather than left unterminated.
-        let room = font.lfFaceName.len() - 1;
-        for (slot, unit) in font.lfFaceName.iter_mut().take(room).zip(current.family.encode_utf16()) {
-            *slot = unit;
-        }
-        let mut request = CHOOSEFONTW {
-            lStructSize: u32::try_from(size_of::<CHOOSEFONTW>()).unwrap_or(u32::MAX),
-            hwndOwner: self.window,
-            lpLogFont: &raw mut font,
-            Flags: CF_INITTOLOGFONTSTRUCT | CF_SCREENFONTS | CF_LIMITSIZE,
-            nSizeMin: SMALLEST_FONT_PT,
-            nSizeMax: LARGEST_FONT_PT,
-            ..CHOOSEFONTW::default()
-        };
-        // SAFETY: `request` and the `font` it points to are live locals for the whole call, which is modal and returns
-        // only once the picker is closed.
-        if !unsafe { ChooseFontW(&raw mut request) }.as_bool() {
-            return None;
-        }
-        let length = font.lfFaceName.iter().position(|unit| *unit == 0).unwrap_or(room);
-        let face = String::from_utf16_lossy(font.lfFaceName.get(..length).unwrap_or_default());
-        Some(font_from_logfont(
-            &face,
-            font.lfWeight,
-            font.lfItalic != 0,
-            request.iPointSize,
-        ))
-    }
-
     /// Opens Windows' colour picker at `current` (`0xRRGGBB`), over this dialog until it closes; `None` when the user
     /// cancels it. The custom colours the user mixes are kept for the next picker this dialog opens.
     pub fn choose_color(&self, current: u32) -> Option<u32> {
@@ -545,39 +560,6 @@ pub const fn colorref_from_rgb(rgb: u32) -> u32 {
 
 pub const fn rgb_from_colorref(colorref: u32) -> u32 {
     swap_red_and_blue(colorref)
-}
-
-/// What the font picker answered, as a [`FontChoice`]; semibold and heavier count as bold.
-pub fn font_from_logfont(face: &str, weight: i32, italic: bool, point_tenths: i32) -> FontChoice {
-    FontChoice {
-        family: face.to_owned(),
-        // Every size the picker allows fits in an i16, which converts to f32 exactly.
-        size_pt: f32::from(i16::try_from(point_tenths).unwrap_or(i16::MAX)) / 10.0,
-        bold: weight >= BOLD_FROM_WEIGHT,
-        italic,
-    }
-}
-
-/// A `LOGFONTW` height for `size_pt` on a screen of `dpi`: negative, so it is the character's height, not the cell's.
-#[expect(
-    clippy::cast_possible_truncation,
-    reason = "a float-to-int `as` saturates, and a font's height in pixels is far below i32::MAX"
-)]
-fn logfont_height(size_pt: f32, dpi: i32) -> i32 {
-    let dpi = f32::from(i16::try_from(dpi).unwrap_or(i16::MAX));
-    -((size_pt * dpi / POINTS_PER_INCH).round() as i32)
-}
-
-/// The vertical DPI the font picker converts sizes with: the screen's.
-fn screen_dpi() -> i32 {
-    // SAFETY: the screen's DC is asked for, read, and given back here; a failure reads 0, which the fallback covers.
-    let dpi = unsafe {
-        let screen = GetDC(None);
-        let dpi = GetDeviceCaps(Some(screen), LOGPIXELSY);
-        ReleaseDC(None, screen);
-        dpi
-    };
-    if dpi > 0 { dpi } else { DEFAULT_DPI }
 }
 
 fn delete_brush(brush: HBRUSH) {
@@ -626,7 +608,15 @@ unsafe extern "system" fn dialog_procedure(window: HWND, message: u32, wparam: W
             // Handled: the dialog is closed by dropping it, not by Windows.
             1
         }
-        WM_CTLCOLORSTATIC => swatch_brush(state, lparam).unwrap_or(0),
+        WM_DRAWITEM => {
+            // SAFETY: for this message `lparam` points to the `DRAWITEMSTRUCT` Windows built for the paint.
+            let drawn = unsafe { ptr::with_exposed_provenance::<DRAWITEMSTRUCT>(lparam.0.cast_unsigned()).as_ref() };
+            drawn.map_or(0, |item| {
+                draw_swatch(state, item);
+                1
+            })
+        }
+        WM_SETCURSOR => isize::from(hand_over_swatch(state, window, wparam)),
         _ => 0,
     }
 }
@@ -649,16 +639,53 @@ fn report(state: &State, control: u16, change: DialogChange) {
     }
 }
 
-/// The brush of the swatch `control` is, as the answer to `WM_CTLCOLORSTATIC`.
-fn swatch_brush(state: &State, control: LPARAM) -> Option<isize> {
-    let control = HWND(ptr::with_exposed_provenance_mut(control.0.cast_unsigned()));
-    // SAFETY: the handle is the control Windows named in the message.
+/// The swatch a `WM_SETCURSOR` or draw message is about, by its control handle.
+fn swatch_id(state: &State, control: HWND) -> Option<u16> {
+    // SAFETY: the handle is the control Windows named in the message; a handle that is not a control gives 0.
     let id = u16::try_from(unsafe { GetDlgCtrlID(control) }).ok()?;
-    state
-        .swatches
-        .borrow()
-        .get(&id)
-        .map(|&(_, brush)| brush.0.expose_provenance().cast_signed())
+    state.swatches.borrow().contains_key(&id).then_some(id)
+}
+
+/// A swatch under the mouse shows the pointing hand, so it reads as clickable. True when the cursor was set.
+fn hand_over_swatch(state: &State, window: HWND, wparam: WPARAM) -> bool {
+    let control = HWND(ptr::with_exposed_provenance_mut(wparam.0));
+    if swatch_id(state, control).is_none() {
+        return false;
+    }
+    // SAFETY: the stock hand cursor is shared and needs no release; setting the cursor and the dialog's message result
+    // have no other preconditions.
+    unsafe {
+        if let Ok(hand) = LoadCursorW(None, IDC_HAND) {
+            SetCursor(Some(hand));
+        }
+        SetWindowLongPtrW(window, MESSAGE_RESULT, 1);
+    }
+    true
+}
+
+/// Paints a swatch: its colour filled, a frame, and a dotted rectangle while it has the keyboard.
+fn draw_swatch(state: &State, item: &DRAWITEMSTRUCT) {
+    let Ok(id) = u16::try_from(item.CtlID) else {
+        return;
+    };
+    let Some(brush) = state.swatches.borrow().get(&id).map(|&(_, brush)| brush) else {
+        return;
+    };
+    let inner = RECT {
+        left: item.rcItem.left + 2,
+        top: item.rcItem.top + 2,
+        right: item.rcItem.right - 2,
+        bottom: item.rcItem.bottom - 2,
+    };
+    // SAFETY: the device context and rectangle are the ones Windows passed for this paint, live for the call; the
+    // frame's brush is a system colour brush, which is never freed.
+    unsafe {
+        FillRect(item.hDC, &raw const item.rcItem, brush);
+        FrameRect(item.hDC, &raw const item.rcItem, GetSysColorBrush(COLOR_WINDOWFRAME));
+        if item.itemState.0 & ODS_FOCUS.0 != 0 {
+            DrawFocusRect(item.hDC, &raw const inner).as_bool();
+        }
+    }
 }
 
 #[cfg(test)]

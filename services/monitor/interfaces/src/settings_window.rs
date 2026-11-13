@@ -5,7 +5,8 @@ use std::time::Duration;
 
 use monitor_application::{Field, Line, PawnIoStatus, Settings, ShortcutKeys, StyleSettings};
 use platform_win32::Win32Error;
-use platform_win32::dialog::{DECORATIVE_ID, Dialog, DialogChange, DialogItem, DialogTemplate, FontChoice, ItemKind};
+use platform_win32::dialog::{DECORATIVE_ID, Dialog, DialogChange, DialogItem, DialogTemplate, ItemKind};
+use platform_win32::text::installed_font_families;
 use platform_win32::ui::MessageWindow;
 
 use crate::settings_editor::{Change, Colour, SettingsEditor, ShortcutSlot};
@@ -13,8 +14,14 @@ use crate::shortcuts::{hotkey_keys, shortcut_keys};
 
 const OK: u16 = 1;
 const CANCEL: u16 = 2;
-const FONT_TEXT: u16 = 101;
-const CHANGE_FONT: u16 = 102;
+const FONT_FAMILY: u16 = 101;
+const FONT_SIZE: u16 = 102;
+const SIZE_ARROWS: u16 = 111;
+const BOLD: u16 = 112;
+const ITALIC: u16 = 113;
+/// The font size limits, in points, which the editor enforces too.
+const SMALLEST_FONT_PT: i16 = 6;
+const LARGEST_FONT_PT: i16 = 72;
 const OUTLINE_WIDTH: u16 = 106;
 const OPACITY: u16 = 109;
 const GPU: u16 = 220;
@@ -28,30 +35,25 @@ const PROBLEM: u16 = 400;
 /// `PawnIO`'s own page, where its installer is.
 pub(crate) const PAWNIO_URL: &str = "https://pawnio.eu/";
 const AUTOMATIC_GPU: &str = "Automatic (most video memory)";
-const CHANGE: &str = "Change\u{2026}";
 
-/// A colour's swatch and the button that opens the picker for it.
+/// A colour and the swatch that shows it and opens its picker when clicked.
 struct ColourRow {
     colour: Colour,
     swatch: u16,
-    button: u16,
 }
 
 static COLOUR_ROWS: [ColourRow; 3] = [
     ColourRow {
         colour: Colour::Text,
         swatch: 103,
-        button: 104,
     },
     ColourRow {
         colour: Colour::Outline,
         swatch: 105,
-        button: 107,
     },
     ColourRow {
         colour: Colour::Background,
         swatch: 108,
-        button: 110,
     },
 ];
 
@@ -146,6 +148,10 @@ pub(crate) struct SettingsWindow {
     editor: SettingsEditor,
     /// The adapters the drop-down lists after "Automatic", in its order.
     gpu_names: Vec<String>,
+    /// The family drop-down's entries, in its order.
+    families: Vec<String>,
+    /// Opens the colour picker at a colour; a field so a test can answer without the modal picker.
+    pick_colour: fn(&Dialog, u32) -> Option<u32>,
 }
 
 impl SettingsWindow {
@@ -163,6 +169,11 @@ impl SettingsWindow {
             dialog: Dialog::open(window, &settings_template())?,
             editor: SettingsEditor::new(settings.clone()),
             gpu_names: gpu_names.to_vec(),
+            families: font_family_list(
+                &installed_font_families().unwrap_or_default(),
+                &settings.style.font_family,
+            ),
+            pick_colour: Dialog::choose_color,
         };
         opened.fill(settings);
         opened.show_driver(pawnio);
@@ -171,7 +182,16 @@ impl SettingsWindow {
 
     fn fill(&self, settings: &Settings) {
         let style = &settings.style;
-        self.dialog.set_text(FONT_TEXT, &font_text(style));
+        let family = style.font_family.to_lowercase();
+        let selected = self
+            .families
+            .iter()
+            .position(|name| name.to_lowercase() == family)
+            .unwrap_or_default();
+        self.dialog.set_choices(FONT_FAMILY, &self.families, selected);
+        self.dialog.set_text(FONT_SIZE, &size_text(style.size_pt));
+        self.dialog.set_checked(BOLD, style.bold);
+        self.dialog.set_checked(ITALIC, style.italic);
         for row in &COLOUR_ROWS {
             self.dialog.set_swatch(row.swatch, colour_of(style, row.colour));
         }
@@ -217,9 +237,10 @@ impl SettingsWindow {
         let edit = match (control, change) {
             (OK, DialogChange::Clicked) => return self.finish(),
             (CANCEL, DialogChange::Clicked) => return WindowOutcome::Cancelled(self.editor.original().clone()),
-            (CHANGE_FONT, DialogChange::Clicked) => self.choose_font(),
             (INSTALL_DRIVER, DialogChange::Clicked) => return WindowOutcome::InstallPawnio,
             (SHOW_HIDE_KEYS | LOCK_UNLOCK_KEYS, DialogChange::Edited) => self.edited_shortcut(control),
+            (FONT_FAMILY, DialogChange::Selected) => self.choose_family(),
+            (FONT_SIZE, DialogChange::Edited) => self.editor.set_size(&self.dialog.text(control)),
             (OUTLINE_WIDTH, DialogChange::Edited) => self.editor.set_outline_width(&self.dialog.text(control)),
             (OPACITY, DialogChange::Edited) => self.editor.set_opacity(&self.dialog.text(control)),
             (INTERVAL, DialogChange::Edited) => self.editor.set_interval(&self.dialog.text(control)),
@@ -273,12 +294,17 @@ impl SettingsWindow {
         }
     }
 
-    /// A colour button, a line's check box, or a value's check box.
+    /// A colour's swatch, bold or italic, a line's check box, or a value's check box.
     fn clicked(&mut self, control: u16) -> Change {
-        if let Some(row) = COLOUR_ROWS.iter().find(|row| row.button == control) {
+        if let Some(row) = COLOUR_ROWS.iter().find(|row| row.swatch == control) {
             return self.choose_colour(row);
         }
         let on = self.dialog.is_checked(control);
+        match control {
+            BOLD => return self.editor.set_bold(on),
+            ITALIC => return self.editor.set_italic(on),
+            _ => {}
+        }
         if control == START_WITH_WINDOWS {
             return self.editor.set_start_with_windows(on);
         }
@@ -339,25 +365,17 @@ impl SettingsWindow {
         self.editor.set_gpu(name)
     }
 
-    fn choose_font(&mut self) -> Change {
-        let style = &self.editor.edited().style;
-        let current = FontChoice {
-            family: style.font_family.clone(),
-            size_pt: style.size_pt,
-            bold: style.bold,
-            italic: style.italic,
-        };
-        let Some(chosen) = self.dialog.choose_font(&current) else {
-            return Change::Unchanged;
-        };
-        let change = self.editor.set_font(&chosen);
-        self.dialog.set_text(FONT_TEXT, &font_text(&self.editor.edited().style));
-        change
+    fn choose_family(&mut self) -> Change {
+        let family = self
+            .dialog
+            .choice(FONT_FAMILY)
+            .and_then(|index| self.families.get(index));
+        family.map_or(Change::Unchanged, |name| self.editor.set_family(name))
     }
 
     fn choose_colour(&mut self, row: &ColourRow) -> Change {
         let current = colour_of(&self.editor.edited().style, row.colour);
-        let Some(rgb) = self.dialog.choose_color(current) else {
+        let Some(rgb) = (self.pick_colour)(&self.dialog, current) else {
             return Change::Unchanged;
         };
         self.dialog.set_swatch(row.swatch, rgb);
@@ -389,16 +407,21 @@ pub(crate) const fn offers_install(status: &PawnIoStatus) -> bool {
     )
 }
 
-/// The font as the window names it: "Consolas Bold, 14 pt".
-pub(crate) fn font_text(style: &StyleSettings) -> String {
-    let mut name = style.font_family.clone();
-    if style.bold {
-        name.push_str(" Bold");
+/// The size as its box shows it: "14", and a saved fraction such as "10.5" as it is.
+pub(crate) fn size_text(size_pt: f32) -> String {
+    size_pt.to_string()
+}
+
+/// The family drop-down's entries: the installed families and the saved one, sorted, each once. A saved family that is
+/// not installed stays in the list, so it stays selected and visible; the overlay then falls back as it does today.
+pub(crate) fn font_family_list(installed: &[String], saved: &str) -> Vec<String> {
+    let mut list = installed.to_vec();
+    if !list.iter().any(|name| name.to_lowercase() == saved.to_lowercase()) {
+        list.push(saved.to_owned());
     }
-    if style.italic {
-        name.push_str(" Italic");
-    }
-    format!("{name}, {} pt", style.size_pt)
+    list.sort_by_cached_key(|name| (name.to_lowercase(), name.clone()));
+    list.dedup_by(|later, earlier| later.to_lowercase() == earlier.to_lowercase());
+    list
 }
 
 /// Seconds with two decimals for a quarter, one otherwise, so a whole second still reads as "1.0".
@@ -535,23 +558,22 @@ fn general_items() -> Vec<DialogItem> {
     ]
 }
 
-/// The font and the three colours, each row ending in its Change… button.
+/// The font row, then the three colours, each a swatch that opens its picker when clicked.
 fn style_items() -> Vec<DialogItem> {
     const VALUE_LEFT: i16 = INSIDE_LEFT + 48;
     const SWATCH: (i16, i16) = (28, 12);
     const WORD_LEFT: i16 = VALUE_LEFT + SWATCH.0 + 8;
     const NUMBER_LEFT: i16 = WORD_LEFT + 30;
     const UNIT_LEFT: i16 = NUMBER_LEFT + 28;
+    const FAMILY_WIDTH: i16 = 110;
+    const SIZE_WORD_LEFT: i16 = VALUE_LEFT + FAMILY_WIDTH + 6;
+    const SIZE_LEFT: i16 = SIZE_WORD_LEFT + 20;
+    const SIZE_WIDTH: i16 = 30;
+    const POINTS_LEFT: i16 = SIZE_LEFT + SIZE_WIDTH + 4;
+    const BOLD_LEFT: i16 = POINTS_LEFT + 14;
+    const ITALIC_LEFT: i16 = BOLD_LEFT + 34;
     let rows: [i16; 4] = [16, 34, 52, 70].map(|offset| STYLE_TOP + offset);
     let [font, text, outline, background] = rows;
-    let button = |id: u16, top: i16| {
-        item(
-            id,
-            ItemKind::Button,
-            CHANGE,
-            (INSIDE_RIGHT - BUTTON_WIDTH, top, BUTTON_WIDTH, BUTTON_HEIGHT),
-        )
-    };
     let swatch = |id: u16, top: i16| item(id, ItemKind::Swatch, "", (VALUE_LEFT, top + 1, SWATCH.0, SWATCH.1));
     let number = |id: u16, top: i16| item(id, ItemKind::NumberEdit, "", (NUMBER_LEFT, top + 1, 24, 12));
     vec![
@@ -562,23 +584,43 @@ fn style_items() -> Vec<DialogItem> {
             (MARGIN, STYLE_TOP, GROUP_WIDTH, STYLE_HEIGHT),
         ),
         label("Font:", (INSIDE_LEFT, font + 3, 46, 8)),
-        item(FONT_TEXT, ItemKind::Label, "", (VALUE_LEFT, font + 3, 200, 8)),
-        button(CHANGE_FONT, font),
+        item(
+            FONT_FAMILY,
+            ItemKind::DropDownList,
+            "",
+            (VALUE_LEFT, font, FAMILY_WIDTH, 140),
+        ),
+        label("Size", (SIZE_WORD_LEFT, font + 3, 18, 8)),
+        item(
+            FONT_SIZE,
+            ItemKind::NumberEdit,
+            "",
+            (SIZE_LEFT, font + 1, SIZE_WIDTH, 12),
+        ),
+        item(
+            SIZE_ARROWS,
+            ItemKind::Spin {
+                min: SMALLEST_FONT_PT,
+                max: LARGEST_FONT_PT,
+            },
+            "",
+            (SIZE_LEFT, font + 1, SIZE_WIDTH, 12),
+        ),
+        label("pt", (POINTS_LEFT, font + 3, 12, 8)),
+        item(BOLD, ItemKind::CheckBox, "Bold", (BOLD_LEFT, font + 1, 32, 10)),
+        item(ITALIC, ItemKind::CheckBox, "Italic", (ITALIC_LEFT, font + 1, 34, 10)),
         label("Text:", (INSIDE_LEFT, text + 3, 46, 8)),
         swatch(103, text),
-        button(104, text),
         label("Outline:", (INSIDE_LEFT, outline + 3, 46, 8)),
         swatch(105, outline),
         label("width", (WORD_LEFT, outline + 3, 28, 8)),
         number(OUTLINE_WIDTH, outline),
         label("px", (UNIT_LEFT, outline + 3, 14, 8)),
-        button(107, outline),
         label("Background:", (INSIDE_LEFT, background + 3, 46, 8)),
         swatch(108, background),
         label("opacity", (WORD_LEFT, background + 3, 28, 8)),
         number(OPACITY, background),
         label("%", (UNIT_LEFT, background + 3, 14, 8)),
-        button(110, background),
     ]
 }
 

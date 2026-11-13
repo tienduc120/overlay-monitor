@@ -1,14 +1,13 @@
 use std::time::Duration;
 
 use windows::Win32::Foundation::{LPARAM, WPARAM};
-use windows::Win32::UI::Input::KeyboardAndMouse::VK_ESCAPE;
+use windows::Win32::UI::Input::KeyboardAndMouse::{VK_DOWN, VK_ESCAPE, VK_UP};
 use windows::Win32::UI::WindowsAndMessaging::{
     BN_CLICKED, GetDlgItem, PostMessageW, SendMessageW, WM_CLOSE, WM_COMMAND, WM_KEYDOWN,
 };
 
 use super::{
-    Dialog, DialogChange, DialogItem, DialogTemplate, FontChoice, ItemKind, colorref_from_rgb, encode_template,
-    font_from_logfont, logfont_height, rgb_from_colorref,
+    Dialog, DialogChange, DialogItem, DialogTemplate, ItemKind, colorref_from_rgb, encode_template, rgb_from_colorref,
 };
 use crate::hotkey::HotkeyKeys;
 use crate::ui::{Flow, MessageWindow, UiEvent, run_message_loop};
@@ -332,29 +331,6 @@ fn colours_swap_their_red_and_blue_bytes_for_colorref() {
 }
 
 #[test]
-fn a_logfont_reads_as_a_font_choice() {
-    let bold = font_from_logfont("Consolas", 700, false, 140);
-    let regular = font_from_logfont("Consolas", 400, false, 140);
-
-    assert_eq!(
-        bold,
-        FontChoice {
-            family: "Consolas".to_owned(),
-            size_pt: 14.0,
-            bold: true,
-            italic: false,
-        }
-    );
-    assert!(!regular.bold, "weight 400 is regular");
-}
-
-#[test]
-fn a_point_size_becomes_a_logfont_height_in_pixels() {
-    assert_eq!(logfont_height(14.0, 96), -19, "14 pt at 96 dpi is 18.7 px, rounded");
-    assert_eq!(logfont_height(9.0, 144), -18);
-}
-
-#[test]
 fn a_disabled_control_reads_back_as_disabled() {
     let window = MessageWindow::create().unwrap();
     let dialog = open_with(&window);
@@ -363,4 +339,124 @@ fn a_disabled_control_reads_back_as_disabled() {
 
     assert!(!dialog.is_enabled(CHECK));
     assert!(dialog.is_enabled(EDIT));
+}
+
+const SIZE: u16 = 20;
+const SIZE_ARROWS: u16 = 21;
+const SWATCH: u16 = 22;
+
+fn spin_template() -> DialogTemplate {
+    DialogTemplate {
+        title: "Test".to_owned(),
+        width: 200,
+        height: 80,
+        items: vec![
+            item(SIZE, ItemKind::NumberEdit, "14", 4),
+            item(SIZE_ARROWS, ItemKind::Spin { min: 6, max: 72 }, "", 4),
+            item(SWATCH, ItemKind::Swatch, "", 20),
+            item(OK, ItemKind::DefaultButton, "OK", 50),
+        ],
+    }
+}
+
+fn press(dialog: &Dialog, id: u16, key: u16) {
+    // SAFETY: the dialog is live.
+    let control = unsafe { GetDlgItem(Some(dialog.window), i32::from(id)) }.unwrap();
+    // SAFETY: the control is live; the message is a key press.
+    unsafe { SendMessageW(control, WM_KEYDOWN, Some(WPARAM(usize::from(key))), Some(LPARAM(0))) };
+}
+
+#[test]
+fn the_arrows_are_the_size_boxes_buddy_with_their_range() {
+    let window = MessageWindow::create().unwrap();
+    let dialog = Dialog::open(&window, &spin_template()).unwrap();
+
+    assert_eq!(dialog.spin_buddy(SIZE_ARROWS), Some(SIZE));
+    assert_eq!(dialog.spin_range(SIZE_ARROWS), Some((6, 72)));
+    assert_eq!(dialog.spin_buddy(SIZE), None, "an edit has no buddy");
+    assert_eq!(dialog.text(SIZE), "14");
+}
+
+#[test]
+fn the_arrow_keys_step_by_one_and_stop_at_the_range() {
+    let window = MessageWindow::create().unwrap();
+    let dialog = Dialog::open(&window, &spin_template()).unwrap();
+
+    press(&dialog, SIZE, VK_UP.0);
+    let up = dialog.text(SIZE);
+    dialog.set_text(SIZE, "72");
+    press(&dialog, SIZE, VK_UP.0);
+    let at_top = dialog.text(SIZE);
+    dialog.set_text(SIZE, "6");
+    press(&dialog, SIZE, VK_DOWN.0);
+    let at_bottom = dialog.text(SIZE);
+
+    assert_eq!((up.as_str(), at_top.as_str(), at_bottom.as_str()), ("15", "72", "6"));
+}
+
+#[test]
+fn stepping_reports_the_size_box_as_edited() {
+    let window = MessageWindow::create().unwrap();
+    let dialog = Dialog::open(&window, &spin_template()).unwrap();
+
+    press(&dialog, SIZE, VK_UP.0);
+    window.sink().send(UiEvent::Wake);
+    let seen = loop_events(&window, |event| event == UiEvent::Wake);
+
+    assert!(
+        seen.contains(&UiEvent::Dialog {
+            control: SIZE,
+            change: DialogChange::Edited
+        }),
+        "got {seen:?}"
+    );
+}
+
+#[test]
+fn the_arrows_and_swatch_are_built_for_the_keyboard_and_the_mouse() {
+    let bytes = encode_template(&spin_template());
+
+    let items = decode_items(&bytes, 4);
+
+    let find = |id: u16| items.iter().find(|decoded| decoded.id == id).unwrap();
+    let arrows = find(SIZE_ARROWS);
+    assert_eq!(arrows.class, Class::Name("msctls_updown32".to_owned()));
+    // UDS_SETBUDDYINT | UDS_ALIGNRIGHT | UDS_ARROWKEYS | UDS_NOTHOUSANDS
+    assert_eq!(arrows.style & 0x0000_00A6, 0x0000_00A6, "style {:#x}", arrows.style);
+    assert_eq!(
+        arrows.style & 0x0001_0000,
+        0,
+        "the arrows are not a tab stop: the box is"
+    );
+    let swatch = find(SWATCH);
+    assert_eq!(swatch.class, Class::Atom(0x0080), "a button, so Space presses it");
+    assert_eq!(swatch.style & 0xF, 0xB, "BS_OWNERDRAW");
+    assert_ne!(swatch.style & 0x0001_0000, 0, "WS_TABSTOP");
+}
+
+#[test]
+fn a_click_on_a_swatch_reaches_the_loop() {
+    let window = MessageWindow::create().unwrap();
+    let dialog = Dialog::open(&window, &spin_template()).unwrap();
+    dialog.set_swatch(SWATCH, 0x0012_3456);
+    // SAFETY: the dialog is live.
+    let control = unsafe { GetDlgItem(Some(dialog.window), i32::from(SWATCH)) }.unwrap();
+    let wparam = WPARAM((usize::try_from(BN_CLICKED).unwrap() << 16) | usize::from(SWATCH));
+    let lparam = LPARAM(control.0.expose_provenance().cast_signed());
+
+    // SAFETY: the dialog is live; the message is the one a button click sends.
+    unsafe { SendMessageW(dialog.window, WM_COMMAND, Some(wparam), Some(lparam)) };
+    window.sink().send(UiEvent::Wake);
+    let seen = loop_events(&window, |event| event == UiEvent::Wake);
+
+    assert_eq!(
+        seen,
+        [
+            UiEvent::Dialog {
+                control: SWATCH,
+                change: DialogChange::Clicked
+            },
+            UiEvent::Wake
+        ]
+    );
 }

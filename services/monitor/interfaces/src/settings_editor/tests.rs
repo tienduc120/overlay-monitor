@@ -211,3 +211,63 @@ fn the_original_is_what_the_editor_started_with() {
 
     assert_eq!(e.original(), &Settings::default());
 }
+
+#[test]
+fn choosing_a_family_previews_it_and_choosing_it_again_does_not() {
+    let mut e = editor();
+
+    assert_eq!(e.set_family("Segoe UI"), Change::Preview);
+    assert_eq!(e.edited().style.font_family, "Segoe UI");
+    assert_eq!(e.set_family("Segoe UI"), Change::Unchanged);
+}
+
+#[test]
+fn the_size_takes_whole_points_from_6_to_72_and_stays_at_the_limits() {
+    let mut e = editor();
+
+    assert_eq!(e.set_size("15"), Change::Preview);
+    assert_eq!(e.edited().style.size_pt.to_bits(), 15.0_f32.to_bits());
+    assert_eq!(e.set_size("6"), Change::Preview);
+    assert_eq!(e.set_size("6"), Change::Unchanged, "stepping down from 6 stays at 6");
+    assert_eq!(e.set_size("72"), Change::Preview);
+    assert_eq!(e.set_size("72"), Change::Unchanged, "stepping up from 72 stays at 72");
+    assert_eq!(e.edited().style.size_pt.to_bits(), 72.0_f32.to_bits());
+}
+
+#[test]
+fn a_typed_size_out_of_range_is_a_problem_not_a_clamp() {
+    let mut e = editor();
+
+    for typed in ["5", "73", "", "abc", "10.5", "-8"] {
+        assert_eq!(e.set_size(typed), Change::Invalid(Problem::FontSize), "{typed:?}");
+    }
+
+    assert_eq!(e.edited().style.size_pt.to_bits(), 14.0_f32.to_bits());
+    assert_eq!(e.finish().map(|_| ()), Err(Problem::FontSize));
+    assert_eq!(e.set_size(" 20 "), Change::Preview, "fixing it clears the problem");
+    e.finish().unwrap();
+}
+
+#[test]
+fn bold_and_italic_toggle_the_style() {
+    let mut e = editor();
+    assert!(e.edited().style.bold && !e.edited().style.italic, "the default is bold");
+
+    assert_eq!(e.set_bold(false), Change::Preview);
+    assert_eq!(e.set_italic(true), Change::Preview);
+    assert_eq!(e.set_italic(true), Change::Unchanged);
+
+    assert!(!e.edited().style.bold && e.edited().style.italic);
+}
+
+#[test]
+fn cancel_gives_back_the_style_the_editor_opened_with() {
+    let mut e = editor();
+    e.set_family("Arial");
+    e.set_size("30");
+    e.set_bold(false);
+    e.set_italic(true);
+
+    assert_eq!(e.original().style, Settings::default().style);
+    assert_ne!(e.edited().style, e.original().style);
+}

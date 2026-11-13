@@ -2,6 +2,7 @@
 //! colour, so it reads on any background. It draws on any Direct2D render target, whatever presents it.
 
 use windows::Win32::Foundation::{DWRITE_E_NOFONT, E_INVALIDARG, E_POINTER};
+use windows::Win32::Globalization::GetUserDefaultLocaleName;
 use windows::Win32::Graphics::Direct2D::Common::D2D1_COLOR_F;
 use windows::Win32::Graphics::Direct2D::{
     D2D1_CAP_STYLE_ROUND, D2D1_DASH_STYLE_SOLID, D2D1_FACTORY_TYPE_SINGLE_THREADED, D2D1_LINE_JOIN_ROUND,
@@ -11,9 +12,9 @@ use windows::Win32::Graphics::Direct2D::{
 use windows::Win32::Graphics::DirectWrite::{
     DWRITE_FACTORY_TYPE_SHARED, DWRITE_FONT_METRICS, DWRITE_FONT_STRETCH_NORMAL, DWRITE_FONT_STYLE_ITALIC,
     DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_WEIGHT_BOLD, DWRITE_FONT_WEIGHT_NORMAL, DWRITE_GLYPH_METRICS,
-    DWRITE_GLYPH_OFFSET, DWriteCreateFactory, IDWriteFactory, IDWriteFontFace,
+    DWRITE_GLYPH_OFFSET, DWriteCreateFactory, IDWriteFactory, IDWriteFontFace, IDWriteLocalizedStrings,
 };
-use windows::core::{BOOL, HSTRING};
+use windows::core::{BOOL, HSTRING, PCWSTR};
 
 use crate::Win32Error;
 
@@ -252,3 +253,74 @@ fn solid_brush(target: &ID2D1RenderTarget, rgb: u32) -> Result<ID2D1SolidColorBr
     // SAFETY: `colour` is a live local; the brush takes default properties.
     unsafe { target.CreateSolidColorBrush(&raw const colour, None) }
 }
+
+/// What the user's locale is called when Windows cannot say.
+const FALLBACK_LOCALE: &str = "en-us";
+/// `LOCALE_NAME_MAX_LENGTH`, with its terminator.
+const LOCALE_NAME_CAPACITY: usize = 85;
+
+/// The names of the font families the overlay can draw, one per family in the system collection, each in the user's
+/// locale (else en-us, else its first name). They are the same names the overlay's text painter finds a family by.
+///
+/// # Errors
+/// DirectWrite could not be created or would not give the system font collection.
+pub fn installed_font_families() -> Result<Vec<String>, Win32Error> {
+    // SAFETY: the call takes only the factory type.
+    let dwrite: IDWriteFactory = unsafe { DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED) }?;
+    let mut fonts = None;
+    // SAFETY: `fonts` is a live local the call fills.
+    unsafe { dwrite.GetSystemFontCollection(&raw mut fonts, false) }?;
+    let fonts = fonts.ok_or_else(|| Win32Error::from(E_POINTER))?;
+    let locale = user_locale();
+    // SAFETY: the collection is alive.
+    let count = unsafe { fonts.GetFontFamilyCount() };
+    // A family that will not give its names is left out rather than failing the whole list.
+    Ok((0..count)
+        .filter_map(|index| {
+            // SAFETY: `index` is below the collection's count.
+            let family = unsafe { fonts.GetFontFamily(index) }.ok()?;
+            // SAFETY: the family is alive.
+            let names = unsafe { family.GetFamilyNames() }.ok()?;
+            localized_name(&names, &locale)
+        })
+        .collect())
+}
+
+/// The user's locale name as a NUL-terminated string, or [`FALLBACK_LOCALE`].
+fn user_locale() -> Vec<u16> {
+    let mut name = [0_u16; LOCALE_NAME_CAPACITY];
+    // SAFETY: the buffer is a live local of the length Windows documents for a locale name.
+    let written = unsafe { GetUserDefaultLocaleName(&mut name) };
+    match usize::try_from(written) {
+        Ok(length) if length > 1 => name.get(..length).map(<[u16]>::to_vec).unwrap_or_default(),
+        _ => FALLBACK_LOCALE.encode_utf16().chain(Some(0)).collect(),
+    }
+}
+
+/// The name in `locale`, else in [`FALLBACK_LOCALE`], else the first one the family has.
+fn localized_name(names: &IDWriteLocalizedStrings, locale: &[u16]) -> Option<String> {
+    let fallback: Vec<u16> = FALLBACK_LOCALE.encode_utf16().chain(Some(0)).collect();
+    let index = [locale, fallback.as_slice()]
+        .into_iter()
+        .find_map(|wanted| {
+            let (mut index, mut exists) = (0, BOOL::default());
+            // SAFETY: `wanted` is NUL-terminated and outlives the call; `index` and `exists` are live locals.
+            unsafe { names.FindLocaleName(PCWSTR(wanted.as_ptr()), &raw mut index, &raw mut exists) }.ok()?;
+            exists.as_bool().then_some(index)
+        })
+        .unwrap_or(0);
+    // SAFETY: the strings are alive.
+    if unsafe { names.GetCount() } == 0 {
+        return None;
+    }
+    // SAFETY: `index` is a name of this family, or 0 of a family that has at least one.
+    let length = usize::try_from(unsafe { names.GetStringLength(index) }.ok()?).ok()?;
+    let mut buffer = vec![0_u16; length + 1];
+    // SAFETY: the buffer holds the name and its terminator.
+    unsafe { names.GetString(index, &mut buffer) }.ok()?;
+    buffer.truncate(length);
+    Some(String::from_utf16_lossy(&buffer))
+}
+
+#[cfg(test)]
+mod tests;
