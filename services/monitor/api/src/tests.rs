@@ -274,5 +274,6 @@ fn a_trace_stopped_from_outside_is_started_again() {
 
 /// Waits on a channel nobody sends on, which is how a test waits on the clock.
 fn pause(time: Duration) {
-    mpsc::channel::<()>().1.recv_timeout(time).ok();
+    let (_keep_open, never) = mpsc::channel::<()>();
+    never.recv_timeout(time).ok();
 }
